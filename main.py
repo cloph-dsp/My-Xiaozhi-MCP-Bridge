@@ -8,7 +8,9 @@ import httpx
 import websockets
 from dotenv import load_dotenv
 from mcp.server import Server
+from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+from mcp.shared.json_rpc import JSONRPCMessage
 
 logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")
@@ -163,18 +165,79 @@ async def bridge() -> None:
                 async for msg in ws:
                     try:
                         request = json.loads(msg)
-                        logger.debug("Received request: %s", request.get("method"))
+                        method = request.get("method")
+                        logger.debug("Received request: %s", method)
                     except json.JSONDecodeError:
                         logger.warning("Received non-JSON message; ignoring")
                         continue
 
                     try:
-                        # Process request through MCP server
-                        response = await server.process_request(request)
-                        logger.debug("Sending response")
+                        response = None
+                        
+                        if method == "initialize":
+                            # Handle initialize
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request.get("id"),
+                                "result": {
+                                    "protocolVersion": "2024-11-05",
+                                    "capabilities": {
+                                        "tools": {}
+                                    },
+                                    "serverInfo": {
+                                        "name": "supermemory-bridge",
+                                        "version": "1.0.0"
+                                    }
+                                }
+                            }
+                        elif method == "tools/list":
+                            # Handle tools/list
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request.get("id"),
+                                "result": {
+                                    "tools": [
+                                        {
+                                            "name": tool["name"],
+                                            "description": tool.get("description", ""),
+                                            "inputSchema": tool.get("inputSchema", {})
+                                        }
+                                        for tool in tools
+                                    ]
+                                }
+                            }
+                        elif method == "tools/call":
+                            # Handle tools/call
+                            params = request.get("params", {})
+                            tool_name = params.get("name")
+                            arguments = params.get("arguments", {})
+                            
+                            result = await client.call("tools/call", {"name": tool_name, "arguments": arguments})
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request.get("id"),
+                                "result": result
+                            }
+                        else:
+                            logger.warning("Unknown method: %s", method)
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request.get("id"),
+                                "error": {
+                                    "code": -32601,
+                                    "message": f"Method not found: {method}"
+                                }
+                            }
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Error handling request: %s", exc)
-                        continue
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request.get("id"),
+                            "error": {
+                                "code": -32603,
+                                "message": f"Internal error: {str(exc)}"
+                            }
+                        }
 
                     if response:
                         await ws.send(json.dumps(response))

@@ -1,0 +1,4 @@
+mcp
+websockets
+httpx
+python-dotenv

@@ -1,0 +1,17 @@
+# Environment
+.env
+.env.local
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# VS Code
+.vscode/

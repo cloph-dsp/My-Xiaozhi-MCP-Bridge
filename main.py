@@ -186,8 +186,8 @@ async def bridge() -> None:
                 })
                 logger.info("[%s] Initialized: %s", server_name, init_result)
                 
-                # List tools
-                tools_result = await client.call("tools/list", {})
+                # List tools (no params needed for this method)
+                tools_result = await client.call("tools/list")
                 server_tools = tools_result.get("tools", [])
                 
                 # Add server prefix to tool names to avoid conflicts
@@ -402,8 +402,8 @@ async def list_tools_only() -> None:
                 "clientInfo": {"name": "xiaozhi-bridge-cli", "version": "1.0"}
             })
             
-            # List tools
-            tools_result = await client.call("tools/list", {})
+            # List tools (no params needed for this method)
+            tools_result = await client.call("tools/list")
             server_tools = tools_result.get("tools", [])
             
             print(f"✓ Found {len(server_tools)} tools from {server_name}\n")

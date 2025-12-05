@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable
 import httpx
 import websockets
 from dotenv import load_dotenv
-from httpx import ConnectTimeout, HTTPError
+from httpx import ConnectTimeout, HTTPError, HTTPStatusError
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.server.fastmcp import FastMCP
@@ -100,6 +100,8 @@ async def bridge() -> None:
 
                             if response:
                                 await ws.send(json.dumps(response))
+        except HTTPStatusError as exc:
+            logger.error("Supermemory returned %s for %s", exc.response.status_code, exc.request.url)
         except (ConnectTimeout, httpx.TimeoutException):
             logger.error("Timed out connecting to Supermemory at %s; check URL/network and increase SUPERMEMORY_TIMEOUT if needed", cfg["sse_url"])
         except HTTPError as exc:

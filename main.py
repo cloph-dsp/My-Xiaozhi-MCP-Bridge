@@ -7,8 +7,6 @@ from typing import Any, Dict, Iterable
 import httpx
 import websockets
 from dotenv import load_dotenv
-from mcp import ClientSession
-from mcp.client.stdio import StdioClientBackend
 from mcp.server.fastmcp import FastMCP
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")

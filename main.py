@@ -170,50 +170,8 @@ async def bridge() -> None:
 
                     try:
                         # Process request through MCP server
-                        response = await server._mcp_server.handle_request(request)
-                        logger.debug("Sending response: %s", response)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception("Error handling request: %s", exc)
-                        continue
-
-                    if response:
-                        await ws.send(json.dumps(response))
-
-            # Create MCP server
-            server = Server("supermemory-bridge")
-            
-            # Register list_tools handler
-            @server.list_tools()
-            async def list_tools():
-                return [
-                    Tool(
-                        name=tool["name"],
-                        description=tool.get("description", ""),
-                        inputSchema=tool.get("inputSchema", {})
-                    )
-                    for tool in tools
-                ]
-            
-            # Register call_tool handler
-            @server.call_tool()
-            async def call_tool(name: str, arguments: dict):
-                result = await client.call("tools/call", {"name": name, "arguments": arguments})
-                return [TextContent(type="text", text=json.dumps(result))]
-
-            async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
-                logger.info("Connected to Xiaozhi WebSocket")
-                async for msg in ws:
-                    try:
-                        request = json.loads(msg)
-                        logger.debug("Received request: %s", request.get("method"))
-                    except json.JSONDecodeError:
-                        logger.warning("Received non-JSON message; ignoring")
-                        continue
-
-                    try:
-                        # Process request through MCP server
-                        response = await server._mcp_server.handle_request(request)
-                        logger.debug("Sending response: %s", response)
+                        response = await server.process_request(request)
+                        logger.debug("Sending response")
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Error handling request: %s", exc)
                         continue

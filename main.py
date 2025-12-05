@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 import httpx
 import websockets
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server import Server
+from mcp.types import Tool, TextContent
 
 logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")
@@ -114,37 +115,6 @@ class SupermemoryClient:
         await self.client.aclose()
 
 
-def register_remote_tools(fast_mcp: FastMCP, client: SupermemoryClient, tools: List[Dict[str, Any]]) -> None:
-    """Wrap remote Supermemory tools and expose them through FastMCP."""
-
-    for tool in tools:
-        name = tool.get("name")
-        description = tool.get("description", "")
-        input_schema = tool.get("inputSchema") or tool.get("input_schema")
-
-        if not name:
-            logger.warning("Skipping tool with no name: %s", tool)
-            continue
-
-        # Create a closure that captures the tool name
-        def make_runner(tool_name: str):
-            async def runner(**kwargs):
-                result = await client.call("tools/call", {"name": tool_name, "arguments": kwargs})
-                return result
-            return runner
-
-        # FastMCP's tool decorator only accepts name and description
-        # Schema validation is handled internally by FastMCP
-        register_decorator = getattr(fast_mcp, "tool", None)
-
-        if register_decorator:
-            register_decorator(name=name, description=description)(make_runner(name))
-        else:
-            raise RuntimeError("FastMCP does not expose a tool registration method")
-
-        logger.info("Registered remote tool: %s", name)
-
-
 async def bridge() -> None:
     cfg = load_config()
     logger.info("Connecting to Supermemory MCP at %s", cfg["mcp_url"])
@@ -167,20 +137,83 @@ async def bridge() -> None:
             tools = tools_result.get("tools", [])
             logger.info("Found %d tools", len(tools))
 
-            fast_mcp = FastMCP("supermemory-bridge")
-            register_remote_tools(fast_mcp, client, tools)
+            # Create MCP server
+            server = Server("supermemory-bridge")
+            
+            # Register list_tools handler
+            @server.list_tools()
+            async def list_tools():
+                return [
+                    Tool(
+                        name=tool["name"],
+                        description=tool.get("description", ""),
+                        inputSchema=tool.get("inputSchema", {})
+                    )
+                    for tool in tools
+                ]
+            
+            # Register call_tool handler
+            @server.call_tool()
+            async def call_tool(name: str, arguments: dict):
+                result = await client.call("tools/call", {"name": name, "arguments": arguments})
+                return [TextContent(type="text", text=json.dumps(result))]
 
             async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
                 logger.info("Connected to Xiaozhi WebSocket")
                 async for msg in ws:
                     try:
                         request = json.loads(msg)
+                        logger.debug("Received request: %s", request.get("method"))
                     except json.JSONDecodeError:
                         logger.warning("Received non-JSON message; ignoring")
                         continue
 
                     try:
-                        response = await fast_mcp._server.process_request(request)
+                        # Process request through MCP server
+                        response = await server._mcp_server.handle_request(request)
+                        logger.debug("Sending response: %s", response)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Error handling request: %s", exc)
+                        continue
+
+                    if response:
+                        await ws.send(json.dumps(response))
+
+            # Create MCP server
+            server = Server("supermemory-bridge")
+            
+            # Register list_tools handler
+            @server.list_tools()
+            async def list_tools():
+                return [
+                    Tool(
+                        name=tool["name"],
+                        description=tool.get("description", ""),
+                        inputSchema=tool.get("inputSchema", {})
+                    )
+                    for tool in tools
+                ]
+            
+            # Register call_tool handler
+            @server.call_tool()
+            async def call_tool(name: str, arguments: dict):
+                result = await client.call("tools/call", {"name": name, "arguments": arguments})
+                return [TextContent(type="text", text=json.dumps(result))]
+
+            async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
+                logger.info("Connected to Xiaozhi WebSocket")
+                async for msg in ws:
+                    try:
+                        request = json.loads(msg)
+                        logger.debug("Received request: %s", request.get("method"))
+                    except json.JSONDecodeError:
+                        logger.warning("Received non-JSON message; ignoring")
+                        continue
+
+                    try:
+                        # Process request through MCP server
+                        response = await server._mcp_server.handle_request(request)
+                        logger.debug("Sending response: %s", response)
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Error handling request: %s", exc)
                         continue

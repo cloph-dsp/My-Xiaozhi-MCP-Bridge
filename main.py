@@ -16,33 +16,54 @@ logging.basicConfig(level=getattr(logging, log_level), format="[%(levelname)s] %
 logger = logging.getLogger("bridge")
 
 
-def load_config() -> Dict[str, str]:
+def load_config() -> Dict[str, Any]:
     xiaozhi_wss = os.getenv("XIAOZHI_WSS_URL")
-    mcp_url = os.getenv("SUPERMEMORY_MCP_URL", "https://api.supermemory.ai/mcp")
-    token = os.getenv("SUPERMEMORY_TOKEN")
-    request_timeout = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
     retry_delay = float(os.getenv("SUPERMEMORY_RETRY_DELAY", "5"))
 
-    missing = [name for name, value in {
-        "XIAOZHI_WSS_URL": xiaozhi_wss,
-        "SUPERMEMORY_TOKEN": token,
-    }.items() if not value]
+    # Supermemory configuration
+    supermemory_config = {
+        "url": os.getenv("SUPERMEMORY_MCP_URL", "https://api.supermemory.ai/mcp"),
+        "token": os.getenv("SUPERMEMORY_TOKEN"),
+        "timeout": float(os.getenv("SUPERMEMORY_TIMEOUT", "30")),
+        "type": "sse",
+    }
+
+    # Google Workspace configuration (optional)
+    google_workspace_config = None
+    if os.getenv("GOOGLE_WORKSPACE_ENABLED", "false").lower() == "true":
+        google_workspace_config = {
+            "url": os.getenv("GOOGLE_WORKSPACE_MCP_URL"),
+            "timeout": float(os.getenv("GOOGLE_WORKSPACE_TIMEOUT", "30")),
+            "type": "sse",
+        }
+
+    # Validate required fields
+    missing = []
+    if not xiaozhi_wss:
+        missing.append("XIAOZHI_WSS_URL")
+    if not supermemory_config["token"]:
+        missing.append("SUPERMEMORY_TOKEN")
+    if google_workspace_config and not google_workspace_config["url"]:
+        missing.append("GOOGLE_WORKSPACE_MCP_URL")
+    
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
     return {
         "xiaozhi_wss": xiaozhi_wss,
-        "mcp_url": mcp_url,
-        "token": token,
-        "request_timeout": request_timeout,
         "retry_delay": retry_delay,
+        "servers": {
+            "supermemory": supermemory_config,
+            "google_workspace": google_workspace_config,
+        }
     }
 
 
-class SupermemoryClient:
-    """Simple JSON-RPC client for Supermemory MCP API."""
+class MCPClient:
+    """Generic JSON-RPC client for MCP servers (SSE or HTTP)."""
 
-    def __init__(self, url: str, token: str, timeout: float = 30):
+    def __init__(self, name: str, url: str, timeout: float = 30, token: str | None = None):
+        self.name = name
         self.url = url
         self.token = token
         self.client = httpx.AsyncClient(timeout=timeout)
@@ -61,27 +82,30 @@ class SupermemoryClient:
         }
         
         headers = {
-            "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        
+        # Add authentication if token is provided
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         
         # Add session ID for subsequent requests after initialize
         if self.session_id:
             headers["mcp-session-id"] = self.session_id
         
-        logger.debug("Calling %s: %s", method, params)
-        logger.debug("Request payload: %s", json.dumps(payload))
+        logger.debug("[%s] Calling %s: %s", self.name, method, params)
+        logger.debug("[%s] Request payload: %s", self.name, json.dumps(payload))
         
         # Stream the response for SSE
         async with self.client.stream("POST", self.url, json=payload, headers=headers) as response:
-            logger.info("Response status: %s", response.status_code)
-            logger.debug("Response headers: %s", dict(response.headers))
+            logger.info("[%s] Response status: %s", self.name, response.status_code)
+            logger.debug("[%s] Response headers: %s", self.name, dict(response.headers))
             
             # Capture session ID from response headers
             if "mcp-session-id" in response.headers:
                 self.session_id = response.headers["mcp-session-id"]
-                logger.info("Captured session ID: %s", self.session_id[:16] + "...")
+                logger.info("[%s] Captured session ID: %s", self.name, self.session_id[:16] + "...")
             
             response.raise_for_status()
             
@@ -102,7 +126,7 @@ class SupermemoryClient:
                             data_json = line[6:]  # Strip "data: " prefix
                             try:
                                 data = json.loads(data_json)
-                                logger.debug("SSE data line: %s", data_json[:500])
+                                logger.debug("[%s] SSE data line: %s", self.name, data_json[:500])
                                 
                                 if "error" in data:
                                     raise RuntimeError(f"JSON-RPC error: {data['error']}")
@@ -110,16 +134,16 @@ class SupermemoryClient:
                                 if "result" in data:
                                     return data.get("result")
                             except json.JSONDecodeError:
-                                logger.warning("Invalid JSON in SSE data: %s", data_json[:100])
+                                logger.warning("[%s] Invalid JSON in SSE data: %s", self.name, data_json[:100])
                 
-                raise RuntimeError("No result found in SSE response")
+                raise RuntimeError(f"[{self.name}] No result found in SSE response")
             else:
                 # Plain JSON response
                 text = await response.aread()
                 data = json.loads(text)
                 
                 if "error" in data:
-                    raise RuntimeError(f"JSON-RPC error: {data['error']}")
+                    raise RuntimeError(f"[{self.name}] JSON-RPC error: {data['error']}")
                 
                 return data.get("result")
 
@@ -129,47 +153,54 @@ class SupermemoryClient:
 
 async def bridge() -> None:
     cfg = load_config()
-    logger.info("Connecting to Supermemory MCP at %s", cfg["mcp_url"])
-
+    
+    # Initialize all enabled MCP clients
+    clients = {}
+    all_tools = []
+    
     while True:
-        client = None
         try:
-            client = SupermemoryClient(cfg["mcp_url"], cfg["token"], cfg["request_timeout"])
-
-            # Initialize session
-            init_result = await client.call("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}
-            })
-            logger.info("Initialized: %s", init_result)
-
-            # List tools
-            tools_result = await client.call("tools/list", {})
-            tools = tools_result.get("tools", [])
-            logger.info("Found %d tools", len(tools))
-
-            # Create MCP server
-            server = Server("supermemory-bridge")
+            # Connect to all enabled MCP servers
+            for server_name, server_config in cfg["servers"].items():
+                if server_config is None:
+                    continue
+                    
+                logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
+                
+                client = MCPClient(
+                    name=server_name,
+                    url=server_config["url"],
+                    timeout=server_config["timeout"],
+                    token=server_config.get("token")
+                )
+                
+                # Initialize session
+                init_result = await client.call("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}
+                })
+                logger.info("[%s] Initialized: %s", server_name, init_result)
+                
+                # List tools
+                tools_result = await client.call("tools/list", {})
+                server_tools = tools_result.get("tools", [])
+                
+                # Add server prefix to tool names to avoid conflicts
+                for tool in server_tools:
+                    tool["_server"] = server_name  # Track which server owns this tool
+                    tool["name"] = f"{server_name}_{tool['name']}"  # Prefix tool name
+                
+                logger.info("[%s] Found %d tools", server_name, len(server_tools))
+                
+                clients[server_name] = client
+                all_tools.extend(server_tools)
             
-            # Register list_tools handler
-            @server.list_tools()
-            async def list_tools():
-                return [
-                    Tool(
-                        name=tool["name"],
-                        description=tool.get("description", ""),
-                        inputSchema=tool.get("inputSchema", {})
-                    )
-                    for tool in tools
-                ]
-            
-            # Register call_tool handler
-            @server.call_tool()
-            async def call_tool(name: str, arguments: dict):
-                result = await client.call("tools/call", {"name": name, "arguments": arguments})
-                return [TextContent(type="text", text=json.dumps(result))]
+            logger.info("Total tools from all servers: %d", len(all_tools))
 
+            # Create MCP server (kept for potential future use)
+            server = Server("multi-mcp-bridge")
+            
             async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
                 logger.info("Connected to Xiaozhi WebSocket")
                 async for msg in ws:
@@ -197,14 +228,14 @@ async def bridge() -> None:
                                         "tools": {}
                                     },
                                     "serverInfo": {
-                                        "name": "supermemory-bridge",
+                                        "name": "multi-mcp-bridge",
                                         "version": "1.0.0"
                                     }
                                 }
                             }
                         elif method == "tools/list":
-                            # Handle tools/list
-                            logger.info("Returning %d tools", len(tools))
+                            # Handle tools/list - return tools from all servers
+                            logger.info("Returning %d tools from %d servers", len(all_tools), len(clients))
                             response = {
                                 "jsonrpc": "2.0",
                                 "id": request.get("id"),
@@ -215,40 +246,63 @@ async def bridge() -> None:
                                             "description": tool.get("description", ""),
                                             "inputSchema": tool.get("inputSchema", {})
                                         }
-                                        for tool in tools
+                                        for tool in all_tools
                                     ]
                                 }
                             }
                         elif method == "tools/call":
-                            # Handle tools/call (may take longer, add timeout)
+                            # Handle tools/call - route to correct server
                             params = request.get("params", {})
                             tool_name = params.get("name")
                             arguments = params.get("arguments", {})
-                            logger.info("➤ Calling tool: %s", tool_name)
-                            logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
                             
-                            try:
-                                result = await asyncio.wait_for(
-                                    client.call("tools/call", {"name": tool_name, "arguments": arguments}),
-                                    timeout=60.0  # 60 second timeout for tool calls
-                                )
-                                logger.info("✓ Tool result received")
-                                logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
-                                response = {
-                                    "jsonrpc": "2.0",
-                                    "id": request.get("id"),
-                                    "result": result
-                                }
-                            except asyncio.TimeoutError:
-                                logger.error("✗ Tool call timeout for %s", tool_name)
+                            # Find which server owns this tool
+                            target_server = None
+                            original_tool_name = None
+                            for tool in all_tools:
+                                if tool["name"] == tool_name:
+                                    target_server = tool["_server"]
+                                    # Remove server prefix to get original tool name
+                                    original_tool_name = tool_name.replace(f"{target_server}_", "", 1)
+                                    break
+                            
+                            if not target_server or target_server not in clients:
+                                logger.error("Tool %s not found in any server", tool_name)
                                 response = {
                                     "jsonrpc": "2.0",
                                     "id": request.get("id"),
                                     "error": {
-                                        "code": -32603,
-                                        "message": f"Tool call timeout: {tool_name}"
+                                        "code": -32601,
+                                        "message": f"Tool not found: {tool_name}"
                                     }
                                 }
+                            else:
+                                logger.info("➤ Calling tool: %s on server %s", original_tool_name, target_server)
+                                logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
+                                
+                                try:
+                                    client = clients[target_server]
+                                    result = await asyncio.wait_for(
+                                        client.call("tools/call", {"name": original_tool_name, "arguments": arguments}),
+                                        timeout=60.0  # 60 second timeout for tool calls
+                                    )
+                                    logger.info("✓ Tool result received from %s", target_server)
+                                    logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
+                                    response = {
+                                        "jsonrpc": "2.0",
+                                        "id": request.get("id"),
+                                        "result": result
+                                    }
+                                except asyncio.TimeoutError:
+                                    logger.error("✗ Tool call timeout for %s on %s", original_tool_name, target_server)
+                                    response = {
+                                        "jsonrpc": "2.0",
+                                        "id": request.get("id"),
+                                        "error": {
+                                            "code": -32603,
+                                            "message": f"Tool call timeout: {tool_name}"
+                                        }
+                                    }
                         elif method == "ping":
                             # Handle ping (heartbeat)
                             response = {
@@ -300,11 +354,14 @@ async def bridge() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Bridge error: %s", exc)
         finally:
-            if client:
+            # Close all clients
+            for client in clients.values():
                 try:
                     await client.close()
                 except Exception:  # noqa: BLE001
                     pass
+            clients.clear()
+            all_tools.clear()
 
         logger.info("Retrying connection in %.1f seconds...", cfg["retry_delay"])
         await asyncio.sleep(cfg["retry_delay"])

@@ -80,8 +80,9 @@ class MCPClient:
             "method": method,
         }
         
-        # Only add params if provided (some servers don't accept empty params)
-        if params:
+        # Add params based on what's provided
+        # Some servers require params to be present (even if empty), others don't accept empty params
+        if params is not None:
             payload["params"] = params
         
         headers = {
@@ -97,8 +98,8 @@ class MCPClient:
         if self.session_id:
             headers["mcp-session-id"] = self.session_id
         
-        logger.debug("[%s] Calling %s: %s", self.name, method, params)
-        logger.debug("[%s] Request payload: %s", self.name, json.dumps(payload))
+        logger.debug("[%s] Calling %s with params: %s", self.name, method, params)
+        logger.debug("[%s] Full request payload: %s", self.name, json.dumps(payload))
         
         # Stream the response for SSE
         async with self.client.stream("POST", self.url, json=payload, headers=headers) as response:
@@ -186,7 +187,7 @@ async def bridge() -> None:
                 logger.info("[%s] Initialized: %s", server_name, init_result)
                 
                 # List tools
-                tools_result = await client.call("tools/list")
+                tools_result = await client.call("tools/list", {})
                 server_tools = tools_result.get("tools", [])
                 
                 # Add server prefix to tool names to avoid conflicts
@@ -402,7 +403,7 @@ async def list_tools_only() -> None:
             })
             
             # List tools
-            tools_result = await client.call("tools/list")
+            tools_result = await client.call("tools/list", {})
             server_tools = tools_result.get("tools", [])
             
             print(f"✓ Found {len(server_tools)} tools from {server_name}\n")

@@ -9,7 +9,7 @@ import websockets
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")
 
 
@@ -63,7 +63,14 @@ class SupermemoryClient:
         }
         
         logger.debug("Calling %s: %s", method, params)
+        logger.debug("Request payload: %s", json.dumps(payload))
+        
         response = await self.client.post(self.url, json=payload, headers=headers)
+        
+        logger.info("Response status: %s", response.status_code)
+        logger.debug("Response headers: %s", dict(response.headers))
+        logger.debug("Response body: %s", response.text[:500])
+        
         response.raise_for_status()
         
         data = response.json()

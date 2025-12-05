@@ -70,16 +70,35 @@ class SupermemoryClient:
         
         logger.info("Response status: %s", response.status_code)
         logger.debug("Response headers: %s", dict(response.headers))
-        logger.debug("Response body: %s", response.text[:500])
         
         response.raise_for_status()
         
-        data = response.json()
-        
-        if "error" in data:
-            raise RuntimeError(f"JSON-RPC error: {data['error']}")
-        
-        return data.get("result")
+        # Parse SSE format if content-type is text/event-stream
+        content_type = response.headers.get("content-type", "")
+        if "text/event-stream" in content_type:
+            # Parse SSE: extract data field from "event: message\ndata: {...}\n\n"
+            text = response.text
+            logger.debug("SSE Response body: %s", text[:500])
+            
+            for line in text.split("\n"):
+                if line.startswith("data: "):
+                    data_json = line[6:]  # Strip "data: " prefix
+                    data = json.loads(data_json)
+                    
+                    if "error" in data:
+                        raise RuntimeError(f"JSON-RPC error: {data['error']}")
+                    
+                    return data.get("result")
+            
+            raise RuntimeError("No data field found in SSE response")
+        else:
+            # Plain JSON response
+            data = response.json()
+            
+            if "error" in data:
+                raise RuntimeError(f"JSON-RPC error: {data['error']}")
+            
+            return data.get("result")
 
     async def close(self):
         await self.client.aclose()

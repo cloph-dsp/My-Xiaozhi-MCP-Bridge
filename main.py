@@ -7,9 +7,8 @@ from typing import Any, Dict, Iterable
 import httpx
 import websockets
 from dotenv import load_dotenv
-from httpx import ConnectTimeout, HTTPError, HTTPStatusError
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioClientBackend
 from mcp.server.fastmcp import FastMCP
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -19,9 +18,9 @@ logger = logging.getLogger("bridge")
 def load_config() -> Dict[str, str]:
     load_dotenv()
     xiaozhi_wss = os.getenv("XIAOZHI_WSS_URL")
-    sse_url = os.getenv("SUPERMEMORY_SSE_URL", "https://api.supermemory.ai/mcp")
+    jsonrpc_url = os.getenv("SUPERMEMORY_JSONRPC_URL", "https://api.supermemory.ai/mcp")
     token = os.getenv("SUPERMEMORY_TOKEN")
-    sse_timeout = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
+    request_timeout = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
     retry_delay = float(os.getenv("SUPERMEMORY_RETRY_DELAY", "5"))
 
     missing = [name for name, value in {
@@ -33,14 +32,53 @@ def load_config() -> Dict[str, str]:
 
     return {
         "xiaozhi_wss": xiaozhi_wss,
-        "sse_url": sse_url,
+        "jsonrpc_url": jsonrpc_url,
         "token": token,
-        "sse_timeout": sse_timeout,
+        "request_timeout": request_timeout,
         "retry_delay": retry_delay,
     }
 
 
-def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iterable[Any]) -> None:
+class JsonRpcRemoteClient:
+    """Client for JSON-RPC MCP servers (Supermemory)."""
+
+    def __init__(self, url: str, token: str, timeout: float = 30):
+        self.url = url
+        self.token = token
+        self.timeout = timeout
+        self.request_id = 0
+        self.client = httpx.AsyncClient(timeout=timeout)
+
+    async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
+        """Send a JSON-RPC 2.0 request."""
+        self.request_id += 1
+        request_body = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {},
+            "id": self.request_id,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
+        logger.debug("POST %s: %s", self.url, method)
+        response = await self.client.post(self.url, json=request_body, headers=headers)
+        response.raise_for_status()
+
+        result = response.json()
+        if "error" in result and result["error"]:
+            raise RuntimeError(f"JSON-RPC error: {result['error']}")
+
+        return result.get("result")
+
+    async def close(self):
+        await self.client.aclose()
+
+
+def register_remote_tools(fast_mcp: FastMCP, client: JsonRpcRemoteClient, tools: Iterable[Any]) -> None:
     """Wrap remote Supermemory tools and expose them through FastMCP."""
 
     for tool in tools:
@@ -53,7 +91,7 @@ def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iter
             continue
 
         async def _runner(_name=name, **kwargs):
-            return await session.call_tool(_name, arguments=kwargs)
+            return await client.call("tools/call", {"name": _name, "arguments": kwargs})
 
         register_tool = getattr(fast_mcp, "register_tool", None)
         register_decorator = getattr(fast_mcp, "tool", None)
@@ -70,46 +108,51 @@ def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iter
 
 async def bridge() -> None:
     cfg = load_config()
-    headers = {"Authorization": f"Bearer {cfg['token']}", "Accept": "text/event-stream"}
-    timeout_seconds = cfg["sse_timeout"]
+
+    logger.info("Connecting to Supermemory JSON-RPC at %s", cfg["jsonrpc_url"])
 
     while True:
         try:
-            async with sse_client(cfg["sse_url"], headers=headers, timeout=timeout_seconds) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
+            client = JsonRpcRemoteClient(cfg["jsonrpc_url"], cfg["token"], cfg["request_timeout"])
 
-                    fast_mcp = FastMCP("supermemory-bridge")
-                    register_remote_tools(fast_mcp, session, tools)
+            # Initialize and list tools
+            await client.call("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}})
+            tools = await client.call("tools/list")
 
-                    async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
-                        logger.info("Connected to Xiaozhi WebSocket")
-                        async for msg in ws:
-                            try:
-                                request = json.loads(msg)
-                            except json.JSONDecodeError:
-                                logger.warning("Received non-JSON message; ignoring")
-                                continue
+            fast_mcp = FastMCP("supermemory-bridge")
+            register_remote_tools(fast_mcp, client, tools)
 
-                            try:
-                                response = await fast_mcp._server.process_request(request)
-                            except Exception as exc:  # noqa: BLE001
-                                logger.exception("Error handling request: %s", exc)
-                                continue
+            async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
+                logger.info("Connected to Xiaozhi WebSocket")
+                async for msg in ws:
+                    try:
+                        request = json.loads(msg)
+                    except json.JSONDecodeError:
+                        logger.warning("Received non-JSON message; ignoring")
+                        continue
 
-                            if response:
-                                await ws.send(json.dumps(response))
-        except HTTPStatusError as exc:
-            logger.error("Supermemory returned %s for %s", exc.response.status_code, exc.request.url)
-        except (ConnectTimeout, httpx.TimeoutException):
-            logger.error("Timed out connecting to Supermemory at %s; check URL/network and increase SUPERMEMORY_TIMEOUT if needed", cfg["sse_url"])
-        except HTTPError as exc:
-            logger.error("HTTP error connecting to Supermemory: %s", exc)
+                    try:
+                        response = await fast_mcp._server.process_request(request)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Error handling request: %s", exc)
+                        continue
+
+                    if response:
+                        await ws.send(json.dumps(response))
+
+        except httpx.TimeoutException:
+            logger.error("Timed out connecting to Supermemory at %s; increase SUPERMEMORY_TIMEOUT if needed", cfg["jsonrpc_url"])
+        except httpx.HTTPError as exc:
+            logger.error("HTTP error: %s", exc)
         except websockets.WebSocketException as exc:
             logger.error("WebSocket error: %s", exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Bridge loop error: %s", exc)
+        finally:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         logger.info("Retrying connection in %.1f seconds...", cfg["retry_delay"])
         await asyncio.sleep(cfg["retry_delay"])
@@ -117,3 +160,4 @@ async def bridge() -> None:
 
 if __name__ == "__main__":
     asyncio.run(bridge())
+

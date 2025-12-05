@@ -10,12 +10,13 @@ from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+load_dotenv()
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, log_level), format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")
 
 
 def load_config() -> Dict[str, str]:
-    load_dotenv()
     xiaozhi_wss = os.getenv("XIAOZHI_WSS_URL")
     mcp_url = os.getenv("SUPERMEMORY_MCP_URL", "https://api.supermemory.ai/mcp")
     token = os.getenv("SUPERMEMORY_TOKEN")
@@ -164,7 +165,9 @@ async def bridge() -> None:
                     try:
                         request = json.loads(msg)
                         method = request.get("method")
-                        logger.debug("Received request: %s", method)
+                        req_id = request.get("id")
+                        logger.info("◀ Received: %s (id=%s)", method, req_id)
+                        logger.debug("◀ Full request: %s", json.dumps(request)[:500])
                     except json.JSONDecodeError:
                         logger.warning("Received non-JSON message; ignoring")
                         continue
@@ -190,6 +193,7 @@ async def bridge() -> None:
                             }
                         elif method == "tools/list":
                             # Handle tools/list
+                            logger.info("Returning %d tools", len(tools))
                             response = {
                                 "jsonrpc": "2.0",
                                 "id": request.get("id"),
@@ -209,19 +213,23 @@ async def bridge() -> None:
                             params = request.get("params", {})
                             tool_name = params.get("name")
                             arguments = params.get("arguments", {})
+                            logger.info("➤ Calling tool: %s", tool_name)
+                            logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
                             
                             try:
                                 result = await asyncio.wait_for(
                                     client.call("tools/call", {"name": tool_name, "arguments": arguments}),
                                     timeout=60.0  # 60 second timeout for tool calls
                                 )
+                                logger.info("✓ Tool result received")
+                                logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
                                 response = {
                                     "jsonrpc": "2.0",
                                     "id": request.get("id"),
                                     "result": result
                                 }
                             except asyncio.TimeoutError:
-                                logger.error("Tool call timeout for %s", tool_name)
+                                logger.error("✗ Tool call timeout for %s", tool_name)
                                 response = {
                                     "jsonrpc": "2.0",
                                     "id": request.get("id"),
@@ -264,15 +272,19 @@ async def bridge() -> None:
 
                     if response:
                         try:
-                            logger.info("Sending response for %s (id=%s)", method, response.get("id"))
-                            await ws.send(json.dumps(response))
-                            logger.info("Response sent successfully")
+                            response_str = json.dumps(response)
+                            logger.info("▶ Sending: %s (id=%s)", method, response.get("id"))
+                            logger.debug("▶ Full response: %s", response_str[:500])
+                            await ws.send(response_str)
+                            logger.info("✓ Sent successfully")
                         except websockets.exceptions.ConnectionClosedError:
-                            logger.warning("WebSocket closed while sending response; will reconnect")
+                            logger.warning("✗ WebSocket closed while sending response; will reconnect")
                             break
                         except Exception as exc:  # noqa: BLE001
-                            logger.exception("Error sending response: %s", exc)
+                            logger.exception("✗ Error sending response: %s", exc)
                             break
+                    else:
+                        logger.debug("◇ No response needed (notification)")
 
         except Exception as exc:  # noqa: BLE001
             logger.exception("Bridge error: %s", exc)

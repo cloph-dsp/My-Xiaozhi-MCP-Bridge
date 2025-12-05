@@ -45,6 +45,7 @@ class SupermemoryClient:
         self.token = token
         self.client = httpx.AsyncClient(timeout=timeout)
         self.request_id = 0
+        self.session_id = None
 
     async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
         """Send JSON-RPC request and get immediate response."""
@@ -63,6 +64,10 @@ class SupermemoryClient:
             "Accept": "application/json, text/event-stream",
         }
         
+        # Add session ID for subsequent requests after initialize
+        if self.session_id:
+            headers["mcp-session-id"] = self.session_id
+        
         logger.debug("Calling %s: %s", method, params)
         logger.debug("Request payload: %s", json.dumps(payload))
         
@@ -70,6 +75,11 @@ class SupermemoryClient:
         
         logger.info("Response status: %s", response.status_code)
         logger.debug("Response headers: %s", dict(response.headers))
+        
+        # Capture session ID from response headers
+        if "mcp-session-id" in response.headers:
+            self.session_id = response.headers["mcp-session-id"]
+            logger.info("Captured session ID: %s", self.session_id[:16] + "...")
         
         response.raise_for_status()
         

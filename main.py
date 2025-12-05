@@ -8,9 +8,7 @@ import httpx
 import websockets
 from dotenv import load_dotenv
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
-from mcp.shared.json_rpc import JSONRPCMessage
 
 logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")

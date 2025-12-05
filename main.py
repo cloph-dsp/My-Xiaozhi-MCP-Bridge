@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-logging.basicConfig(level=logging.DEBUG, format="[%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("bridge")
 
 
@@ -264,7 +264,9 @@ async def bridge() -> None:
 
                     if response:
                         try:
+                            logger.info("Sending response for %s (id=%s)", method, response.get("id"))
                             await ws.send(json.dumps(response))
+                            logger.info("Response sent successfully")
                         except websockets.exceptions.ConnectionClosedError:
                             logger.warning("WebSocket closed while sending response; will reconnect")
                             break

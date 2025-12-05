@@ -2,12 +2,11 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List
 
+import httpx
 import websockets
 from dotenv import load_dotenv
-from mcp import ClientSession
-from mcp.client.sse import sse_client
 from mcp.server.fastmcp import FastMCP
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -38,20 +37,60 @@ def load_config() -> Dict[str, str]:
     }
 
 
-def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iterable[Any]) -> None:
+class SupermemoryClient:
+    """Simple JSON-RPC client for Supermemory MCP API."""
+
+    def __init__(self, url: str, token: str, timeout: float = 30):
+        self.url = url
+        self.token = token
+        self.client = httpx.AsyncClient(timeout=timeout)
+        self.request_id = 0
+
+    async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
+        """Send JSON-RPC request and get immediate response."""
+        self.request_id += 1
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+            "params": params or {},
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        
+        logger.debug("Calling %s: %s", method, params)
+        response = await self.client.post(self.url, json=payload, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if "error" in data:
+            raise RuntimeError(f"JSON-RPC error: {data['error']}")
+        
+        return data.get("result")
+
+    async def close(self):
+        await self.client.aclose()
+
+
+def register_remote_tools(fast_mcp: FastMCP, client: SupermemoryClient, tools: List[Dict[str, Any]]) -> None:
     """Wrap remote Supermemory tools and expose them through FastMCP."""
 
     for tool in tools:
-        name = getattr(tool, "name", None) or tool.get("name")
-        description = getattr(tool, "description", None) or tool.get("description", "")
-        input_schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or tool.get("inputSchema") or tool.get("input_schema")
+        name = tool.get("name")
+        description = tool.get("description", "")
+        input_schema = tool.get("inputSchema") or tool.get("input_schema")
 
         if not name:
             logger.warning("Skipping tool with no name: %s", tool)
             continue
 
         async def _runner(_name=name, **kwargs):
-            result = await session.call_tool(_name, arguments=kwargs)
+            result = await client.call("tools/call", {"name": _name, "arguments": kwargs})
             return result
 
         register_tool = getattr(fast_mcp, "register_tool", None)
@@ -69,44 +108,55 @@ def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iter
 
 async def bridge() -> None:
     cfg = load_config()
-
     logger.info("Connecting to Supermemory MCP at %s", cfg["mcp_url"])
 
     while True:
+        client = None
         try:
-            headers = {
-                "Authorization": f"Bearer {cfg['token']}",
-            }
-            
-            async with sse_client(cfg["mcp_url"], headers=headers, timeout=cfg["request_timeout"]) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    tools = tools_result.tools if hasattr(tools_result, 'tools') else tools_result
+            client = SupermemoryClient(cfg["mcp_url"], cfg["token"], cfg["request_timeout"])
 
-                    fast_mcp = FastMCP("supermemory-bridge")
-                    register_remote_tools(fast_mcp, session, tools)
+            # Initialize session
+            init_result = await client.call("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}
+            })
+            logger.info("Initialized: %s", init_result)
 
-                    async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
-                        logger.info("Connected to Xiaozhi WebSocket")
-                        async for msg in ws:
-                            try:
-                                request = json.loads(msg)
-                            except json.JSONDecodeError:
-                                logger.warning("Received non-JSON message; ignoring")
-                                continue
+            # List tools
+            tools_result = await client.call("tools/list", {})
+            tools = tools_result.get("tools", [])
+            logger.info("Found %d tools", len(tools))
 
-                            try:
-                                response = await fast_mcp._server.process_request(request)
-                            except Exception as exc:  # noqa: BLE001
-                                logger.exception("Error handling request: %s", exc)
-                                continue
+            fast_mcp = FastMCP("supermemory-bridge")
+            register_remote_tools(fast_mcp, client, tools)
 
-                            if response:
-                                await ws.send(json.dumps(response))
+            async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
+                logger.info("Connected to Xiaozhi WebSocket")
+                async for msg in ws:
+                    try:
+                        request = json.loads(msg)
+                    except json.JSONDecodeError:
+                        logger.warning("Received non-JSON message; ignoring")
+                        continue
+
+                    try:
+                        response = await fast_mcp._server.process_request(request)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Error handling request: %s", exc)
+                        continue
+
+                    if response:
+                        await ws.send(json.dumps(response))
 
         except Exception as exc:  # noqa: BLE001
             logger.exception("Bridge error: %s", exc)
+        finally:
+            if client:
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
         logger.info("Retrying connection in %.1f seconds...", cfg["retry_delay"])
         await asyncio.sleep(cfg["retry_delay"])
@@ -114,5 +164,6 @@ async def bridge() -> None:
 
 if __name__ == "__main__":
     asyncio.run(bridge())
+
 
 

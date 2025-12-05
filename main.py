@@ -205,17 +205,31 @@ async def bridge() -> None:
                                 }
                             }
                         elif method == "tools/call":
-                            # Handle tools/call
+                            # Handle tools/call (may take longer, add timeout)
                             params = request.get("params", {})
                             tool_name = params.get("name")
                             arguments = params.get("arguments", {})
                             
-                            result = await client.call("tools/call", {"name": tool_name, "arguments": arguments})
-                            response = {
-                                "jsonrpc": "2.0",
-                                "id": request.get("id"),
-                                "result": result
-                            }
+                            try:
+                                result = await asyncio.wait_for(
+                                    client.call("tools/call", {"name": tool_name, "arguments": arguments}),
+                                    timeout=60.0  # 60 second timeout for tool calls
+                                )
+                                response = {
+                                    "jsonrpc": "2.0",
+                                    "id": request.get("id"),
+                                    "result": result
+                                }
+                            except asyncio.TimeoutError:
+                                logger.error("Tool call timeout for %s", tool_name)
+                                response = {
+                                    "jsonrpc": "2.0",
+                                    "id": request.get("id"),
+                                    "error": {
+                                        "code": -32603,
+                                        "message": f"Tool call timeout: {tool_name}"
+                                    }
+                                }
                         elif method == "ping":
                             # Handle ping (heartbeat)
                             response = {
@@ -249,7 +263,14 @@ async def bridge() -> None:
                         }
 
                     if response:
-                        await ws.send(json.dumps(response))
+                        try:
+                            await ws.send(json.dumps(response))
+                        except websockets.exceptions.ConnectionClosedError:
+                            logger.warning("WebSocket closed while sending response; will reconnect")
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("Error sending response: %s", exc)
+                            break
 
         except Exception as exc:  # noqa: BLE001
             logger.exception("Bridge error: %s", exc)

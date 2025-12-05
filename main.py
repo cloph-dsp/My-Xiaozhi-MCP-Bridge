@@ -126,16 +126,19 @@ def register_remote_tools(fast_mcp: FastMCP, client: SupermemoryClient, tools: L
             logger.warning("Skipping tool with no name: %s", tool)
             continue
 
-        async def _runner(_name=name, **kwargs):
-            result = await client.call("tools/call", {"name": _name, "arguments": kwargs})
-            return result
+        # Create a closure that captures the tool name
+        def make_runner(tool_name: str):
+            async def runner(**kwargs):
+                result = await client.call("tools/call", {"name": tool_name, "arguments": kwargs})
+                return result
+            return runner
 
         # FastMCP's tool decorator only accepts name and description
         # Schema validation is handled internally by FastMCP
         register_decorator = getattr(fast_mcp, "tool", None)
 
         if register_decorator:
-            register_decorator(name=name, description=description)(_runner)
+            register_decorator(name=name, description=description)(make_runner(name))
         else:
             raise RuntimeError("FastMCP does not expose a tool registration method")
 

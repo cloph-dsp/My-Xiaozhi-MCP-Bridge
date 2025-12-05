@@ -73,44 +73,55 @@ class SupermemoryClient:
         logger.debug("Calling %s: %s", method, params)
         logger.debug("Request payload: %s", json.dumps(payload))
         
-        response = await self.client.post(self.url, json=payload, headers=headers)
-        
-        logger.info("Response status: %s", response.status_code)
-        logger.debug("Response headers: %s", dict(response.headers))
-        
-        # Capture session ID from response headers
-        if "mcp-session-id" in response.headers:
-            self.session_id = response.headers["mcp-session-id"]
-            logger.info("Captured session ID: %s", self.session_id[:16] + "...")
-        
-        response.raise_for_status()
-        
-        # Parse SSE format if content-type is text/event-stream
-        content_type = response.headers.get("content-type", "")
-        if "text/event-stream" in content_type:
-            # Parse SSE: extract data field from "event: message\ndata: {...}\n\n"
-            text = response.text
-            logger.debug("SSE Response body: %s", text[:500])
+        # Stream the response for SSE
+        async with self.client.stream("POST", self.url, json=payload, headers=headers) as response:
+            logger.info("Response status: %s", response.status_code)
+            logger.debug("Response headers: %s", dict(response.headers))
             
-            for line in text.split("\n"):
-                if line.startswith("data: "):
-                    data_json = line[6:]  # Strip "data: " prefix
-                    data = json.loads(data_json)
+            # Capture session ID from response headers
+            if "mcp-session-id" in response.headers:
+                self.session_id = response.headers["mcp-session-id"]
+                logger.info("Captured session ID: %s", self.session_id[:16] + "...")
+            
+            response.raise_for_status()
+            
+            # Parse SSE format if content-type is text/event-stream
+            content_type = response.headers.get("content-type", "")
+            if "text/event-stream" in content_type:
+                # Read SSE stream line by line
+                buffer = ""
+                async for chunk in response.aiter_text():
+                    buffer += chunk
                     
-                    if "error" in data:
-                        raise RuntimeError(f"JSON-RPC error: {data['error']}")
-                    
-                    return data.get("result")
-            
-            raise RuntimeError("No data field found in SSE response")
-        else:
-            # Plain JSON response
-            data = response.json()
-            
-            if "error" in data:
-                raise RuntimeError(f"JSON-RPC error: {data['error']}")
-            
-            return data.get("result")
+                    # Process complete lines
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        
+                        if line.startswith("data: "):
+                            data_json = line[6:]  # Strip "data: " prefix
+                            try:
+                                data = json.loads(data_json)
+                                logger.debug("SSE data line: %s", data_json[:500])
+                                
+                                if "error" in data:
+                                    raise RuntimeError(f"JSON-RPC error: {data['error']}")
+                                
+                                if "result" in data:
+                                    return data.get("result")
+                            except json.JSONDecodeError:
+                                logger.warning("Invalid JSON in SSE data: %s", data_json[:100])
+                
+                raise RuntimeError("No result found in SSE response")
+            else:
+                # Plain JSON response
+                text = await response.aread()
+                data = json.loads(text)
+                
+                if "error" in data:
+                    raise RuntimeError(f"JSON-RPC error: {data['error']}")
+                
+                return data.get("result")
 
     async def close(self):
         await self.client.aclose()

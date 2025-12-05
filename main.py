@@ -60,6 +60,7 @@ class JsonRpcRemoteClient:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
         logger.debug("POST %s: %s", self.url, method)

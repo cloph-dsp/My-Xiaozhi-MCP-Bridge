@@ -78,8 +78,11 @@ class MCPClient:
             "jsonrpc": "2.0",
             "id": self.request_id,
             "method": method,
-            "params": params or {},
         }
+        
+        # Only add params if provided (some servers don't accept empty params)
+        if params:
+            payload["params"] = params
         
         headers = {
             "Content-Type": "application/json",
@@ -183,7 +186,7 @@ async def bridge() -> None:
                 logger.info("[%s] Initialized: %s", server_name, init_result)
                 
                 # List tools
-                tools_result = await client.call("tools/list", {})
+                tools_result = await client.call("tools/list")
                 server_tools = tools_result.get("tools", [])
                 
                 # Add server prefix to tool names to avoid conflicts
@@ -367,8 +370,75 @@ async def bridge() -> None:
         await asyncio.sleep(cfg["retry_delay"])
 
 
+async def list_tools_only() -> None:
+    """List all available tools from all configured MCP servers."""
+    cfg = load_config()
+    
+    print("\n" + "="*60)
+    print("Available Tools from All MCP Servers")
+    print("="*60 + "\n")
+    
+    total_tools = 0
+    
+    for server_name, server_config in cfg["servers"].items():
+        if server_config is None:
+            continue
+        
+        try:
+            print(f"📡 Connecting to {server_name}...")
+            
+            client = MCPClient(
+                name=server_name,
+                url=server_config["url"],
+                timeout=server_config["timeout"],
+                token=server_config.get("token")
+            )
+            
+            # Initialize session
+            await client.call("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "xiaozhi-bridge-cli", "version": "1.0"}
+            })
+            
+            # List tools
+            tools_result = await client.call("tools/list")
+            server_tools = tools_result.get("tools", [])
+            
+            print(f"✓ Found {len(server_tools)} tools from {server_name}\n")
+            
+            for tool in server_tools:
+                prefixed_name = f"{server_name}_{tool['name']}"
+                description = tool.get("description", "No description")
+                print(f"  • {prefixed_name}")
+                print(f"    {description}")
+                
+                # Show input schema if available
+                input_schema = tool.get("inputSchema", {})
+                properties = input_schema.get("properties", {})
+                if properties:
+                    print(f"    Parameters: {', '.join(properties.keys())}")
+                print()
+            
+            total_tools += len(server_tools)
+            
+            await client.close()
+            
+        except Exception as exc:
+            print(f"✗ Error connecting to {server_name}: {exc}\n")
+    
+    print("="*60)
+    print(f"Total: {total_tools} tools from {len([s for s in cfg['servers'].values() if s])} servers")
+    print("="*60 + "\n")
+
+
 if __name__ == "__main__":
-    asyncio.run(bridge())
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--list-tools":
+        asyncio.run(list_tools_only())
+    else:
+        asyncio.run(bridge())
 
 
 

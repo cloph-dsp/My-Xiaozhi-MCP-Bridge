@@ -71,11 +71,11 @@ def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iter
 async def bridge() -> None:
     cfg = load_config()
     headers = {"Authorization": f"Bearer {cfg['token']}", "Accept": "text/event-stream"}
-    timeout = httpx.Timeout(cfg["sse_timeout"])
+    timeout_seconds = cfg["sse_timeout"]
 
     while True:
         try:
-            async with sse_client(cfg["sse_url"], headers=headers, timeout=timeout) as (read, write):
+            async with sse_client(cfg["sse_url"], headers=headers, timeout=timeout_seconds) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools = await session.list_tools()
@@ -100,7 +100,7 @@ async def bridge() -> None:
 
                             if response:
                                 await ws.send(json.dumps(response))
-        except ConnectTimeout:
+        except (ConnectTimeout, httpx.TimeoutException):
             logger.error("Timed out connecting to Supermemory at %s; check URL/network and increase SUPERMEMORY_TIMEOUT if needed", cfg["sse_url"])
         except HTTPError as exc:
             logger.error("HTTP error connecting to Supermemory: %s", exc)

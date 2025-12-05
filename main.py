@@ -4,8 +4,10 @@ import logging
 import os
 from typing import Any, Dict, Iterable
 
+import httpx
 import websockets
 from dotenv import load_dotenv
+from httpx import ConnectTimeout, HTTPError
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +21,8 @@ def load_config() -> Dict[str, str]:
     xiaozhi_wss = os.getenv("XIAOZHI_WSS_URL")
     sse_url = os.getenv("SUPERMEMORY_SSE_URL", "https://api.supermemory.ai/mcp")
     token = os.getenv("SUPERMEMORY_TOKEN")
+    sse_timeout = float(os.getenv("SUPERMEMORY_TIMEOUT", "30"))
+    retry_delay = float(os.getenv("SUPERMEMORY_RETRY_DELAY", "5"))
 
     missing = [name for name, value in {
         "XIAOZHI_WSS_URL": xiaozhi_wss,
@@ -31,6 +35,8 @@ def load_config() -> Dict[str, str]:
         "xiaozhi_wss": xiaozhi_wss,
         "sse_url": sse_url,
         "token": token,
+        "sse_timeout": sse_timeout,
+        "retry_delay": retry_delay,
     }
 
 
@@ -65,32 +71,46 @@ def register_remote_tools(fast_mcp: FastMCP, session: ClientSession, tools: Iter
 async def bridge() -> None:
     cfg = load_config()
     headers = {"Authorization": f"Bearer {cfg['token']}", "Accept": "text/event-stream"}
+    timeout = httpx.Timeout(cfg["sse_timeout"])
 
-    async with sse_client(cfg["sse_url"], headers=headers) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
+    while True:
+        try:
+            async with sse_client(cfg["sse_url"], headers=headers, timeout=timeout) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
 
-            fast_mcp = FastMCP("supermemory-bridge")
-            register_remote_tools(fast_mcp, session, tools)
+                    fast_mcp = FastMCP("supermemory-bridge")
+                    register_remote_tools(fast_mcp, session, tools)
 
-            async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
-                logger.info("Connected to Xiaozhi WebSocket")
-                async for msg in ws:
-                    try:
-                        request = json.loads(msg)
-                    except json.JSONDecodeError:
-                        logger.warning("Received non-JSON message; ignoring")
-                        continue
+                    async with websockets.connect(cfg["xiaozhi_wss"]) as ws:
+                        logger.info("Connected to Xiaozhi WebSocket")
+                        async for msg in ws:
+                            try:
+                                request = json.loads(msg)
+                            except json.JSONDecodeError:
+                                logger.warning("Received non-JSON message; ignoring")
+                                continue
 
-                    try:
-                        response = await fast_mcp._server.process_request(request)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception("Error handling request: %s", exc)
-                        continue
+                            try:
+                                response = await fast_mcp._server.process_request(request)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception("Error handling request: %s", exc)
+                                continue
 
-                    if response:
-                        await ws.send(json.dumps(response))
+                            if response:
+                                await ws.send(json.dumps(response))
+        except ConnectTimeout:
+            logger.error("Timed out connecting to Supermemory at %s; check URL/network and increase SUPERMEMORY_TIMEOUT if needed", cfg["sse_url"])
+        except HTTPError as exc:
+            logger.error("HTTP error connecting to Supermemory: %s", exc)
+        except websockets.WebSocketException as exc:
+            logger.error("WebSocket error: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Bridge loop error: %s", exc)
+
+        logger.info("Retrying connection in %.1f seconds...", cfg["retry_delay"])
+        await asyncio.sleep(cfg["retry_delay"])
 
 
 if __name__ == "__main__":

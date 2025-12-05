@@ -60,6 +60,7 @@ class SupermemoryClient:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
         }
         
         logger.debug("Calling %s: %s", method, params)

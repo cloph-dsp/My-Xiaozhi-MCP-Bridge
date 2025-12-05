@@ -216,6 +216,17 @@ async def bridge() -> None:
                                 "id": request.get("id"),
                                 "result": result
                             }
+                        elif method == "ping":
+                            # Handle ping (heartbeat)
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request.get("id"),
+                                "result": {}
+                            }
+                        elif method and method.startswith("notifications/"):
+                            # Notifications don't require responses
+                            logger.info("Received notification: %s", method)
+                            response = None
                         else:
                             logger.warning("Unknown method: %s", method)
                             response = {

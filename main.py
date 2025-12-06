@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from typing import Any, Dict, List
 
 import httpx
@@ -18,23 +19,23 @@ logger = logging.getLogger("bridge")
 
 def load_config() -> Dict[str, Any]:
     xiaozhi_wss = os.getenv("XIAOZHI_WSS_URL")
-    retry_delay = float(os.getenv("SUPERMEMORY_RETRY_DELAY", "5"))
 
-    # Supermemory configuration
+    # Supermemory configuration (hardcoded defaults)
     supermemory_config = {
-        "url": os.getenv("SUPERMEMORY_MCP_URL", "https://api.supermemory.ai/mcp"),
+        "url": "https://api.supermemory.ai/mcp",
         "token": os.getenv("SUPERMEMORY_TOKEN"),
-        "timeout": float(os.getenv("SUPERMEMORY_TIMEOUT", "30")),
-        "type": "sse",
+        "timeout": 30.0,
+        "type": "http",
     }
-
-    # Google Workspace configuration (optional)
-    google_workspace_config = None
-    if os.getenv("GOOGLE_WORKSPACE_ENABLED", "false").lower() == "true":
-        google_workspace_config = {
-            "url": os.getenv("GOOGLE_WORKSPACE_MCP_URL"),
-            "timeout": float(os.getenv("GOOGLE_WORKSPACE_TIMEOUT", "30")),
-            "type": "sse",
+    
+    # Google Workspace Stdio configuration (optional, recommended)
+    google_workspace_stdio_config = None
+    if os.getenv("GOOGLE_WORKSPACE_STDIO_ENABLED", "false").lower() == "true":
+        google_workspace_stdio_config = {
+            "command": "uv",
+            "args": ["run", "main.py"],
+            "cwd": os.getenv("GOOGLE_WORKSPACE_STDIO_CWD"),
+            "type": "stdio",
         }
 
     # Validate required fields
@@ -43,19 +44,21 @@ def load_config() -> Dict[str, Any]:
         missing.append("XIAOZHI_WSS_URL")
     if not supermemory_config["token"]:
         missing.append("SUPERMEMORY_TOKEN")
-    if google_workspace_config and not google_workspace_config["url"]:
-        missing.append("GOOGLE_WORKSPACE_MCP_URL")
+    if google_workspace_stdio_config and not google_workspace_stdio_config["cwd"]:
+        missing.append("GOOGLE_WORKSPACE_STDIO_CWD")
     
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
+    servers = {"supermemory": supermemory_config}
+    
+    if google_workspace_stdio_config:
+        servers["google_workspace"] = google_workspace_stdio_config
+
     return {
         "xiaozhi_wss": xiaozhi_wss,
-        "retry_delay": retry_delay,
-        "servers": {
-            "supermemory": supermemory_config,
-            "google_workspace": google_workspace_config,
-        }
+        "retry_delay": 5.0,  # Hardcoded retry delay
+        "servers": servers
     }
 
 
@@ -101,7 +104,8 @@ class MCPClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         
-        # Add session ID for subsequent requests after initialize
+        # Add session ID for all requests (some servers require it even for initialize)
+        # If not set yet, try to use one from previous requests
         if self.session_id:
             headers["mcp-session-id"] = self.session_id
         
@@ -162,6 +166,96 @@ class MCPClient:
         await self.client.aclose()
 
 
+class StdioMCPClient:
+    """JSON-RPC client for MCP servers running as stdio subprocesses."""
+
+    def __init__(self, name: str, command: str, args: List[str], cwd: str | None = None):
+        self.name = name
+        self.command = command
+        self.args = args
+        self.cwd = cwd
+        self.process = None
+        self.request_id = 0
+        self.pending_responses = {}
+
+    async def start(self):
+        """Start the subprocess."""
+        self.process = await asyncio.create_subprocess_exec(
+            self.command,
+            *self.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.cwd
+        )
+        logger.info("[%s] Started stdio subprocess: %s %s", self.name, self.command, " ".join(self.args))
+        
+        # Start background task to read responses
+        asyncio.create_task(self._read_responses())
+
+    async def _read_responses(self):
+        """Background task to read JSON-RPC responses from stdout."""
+        try:
+            async for line in self.process.stdout:
+                try:
+                    response = json.loads(line.decode().strip())
+                    req_id = response.get("id")
+                    if req_id and req_id in self.pending_responses:
+                        future = self.pending_responses.pop(req_id)
+                        if "error" in response:
+                            future.set_exception(RuntimeError(f"JSON-RPC error: {response['error']}"))
+                        else:
+                            future.set_result(response.get("result"))
+                    else:
+                        logger.debug("[%s] Received response without pending request: %s", self.name, response)
+                except json.JSONDecodeError:
+                    logger.warning("[%s] Invalid JSON from stdout: %s", self.name, line[:100])
+        except Exception as e:
+            logger.error("[%s] Error reading responses: %s", self.name, e)
+
+    async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
+        """Send JSON-RPC request via stdin and wait for response from stdout."""
+        self.request_id += 1
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+        }
+        
+        if params is not None:
+            payload["params"] = params
+        
+        logger.debug("[%s] Calling %s with params: %s", self.name, method, params)
+        
+        # Create future for response
+        future = asyncio.Future()
+        self.pending_responses[self.request_id] = future
+        
+        # Send request to stdin
+        request_line = json.dumps(payload) + "\n"
+        self.process.stdin.write(request_line.encode())
+        await self.process.stdin.drain()
+        
+        # Wait for response with timeout
+        try:
+            result = await asyncio.wait_for(future, timeout=60.0)
+            return result
+        except asyncio.TimeoutError:
+            self.pending_responses.pop(self.request_id, None)
+            raise RuntimeError(f"[{self.name}] Timeout waiting for {method} response")
+
+    async def close(self):
+        """Terminate the subprocess."""
+        if self.process:
+            self.process.terminate()
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+
+
 async def bridge() -> None:
     cfg = load_config()
     
@@ -177,14 +271,32 @@ async def bridge() -> None:
                     continue
                 
                 try:
-                    logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
+                    server_type = server_config.get("type", "http")
                     
-                    client = MCPClient(
-                        name=server_name,
-                        url=server_config["url"],
-                        timeout=server_config["timeout"],
-                        token=server_config.get("token")
-                    )
+                    if server_type == "stdio":
+                        # Stdio subprocess client
+                        logger.info("Starting %s MCP via stdio: %s %s", 
+                                    server_name, server_config["command"], " ".join(server_config["args"]))
+                        
+                        client = StdioMCPClient(
+                            name=server_name,
+                            command=server_config["command"],
+                            args=server_config["args"],
+                            cwd=server_config.get("cwd")
+                        )
+                        
+                        await client.start()
+                        
+                    else:
+                        # HTTP/SSE client
+                        logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
+                        
+                        client = MCPClient(
+                            name=server_name,
+                            url=server_config["url"],
+                            timeout=server_config["timeout"],
+                            token=server_config.get("token")
+                        )
                     
                     # Initialize session
                     init_result = await client.call("initialize", {

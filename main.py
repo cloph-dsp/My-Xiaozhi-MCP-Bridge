@@ -186,8 +186,26 @@ async def bridge() -> None:
                 })
                 logger.info("[%s] Initialized: %s", server_name, init_result)
                 
+                # Send initialized notification (required by some MCP servers like FastMCP)
+                try:
+                    # This is a notification, not a request, so it doesn't expect a response
+                    await client.call("notifications/initialized")
+                    logger.debug("[%s] Sent initialized notification", server_name)
+                except Exception as e:
+                    # Some servers don't implement this, ignore errors
+                    logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
+                
                 # List tools (no params needed for this method)
-                tools_result = await client.call("tools/list")
+                # Try without params first, then with empty params if it fails
+                try:
+                    tools_result = await client.call("tools/list")
+                except RuntimeError as e:
+                    if "Invalid request parameters" in str(e):
+                        logger.warning("[%s] tools/list failed without params, retrying with empty object", server_name)
+                        # Some servers require explicit empty params
+                        tools_result = await client.call("tools/list", {})
+                    else:
+                        raise
                 server_tools = tools_result.get("tools", [])
                 
                 # Add server prefix to tool names to avoid conflicts

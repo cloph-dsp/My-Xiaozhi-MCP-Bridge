@@ -203,24 +203,34 @@ async def bridge() -> None:
                         # Some servers don't implement this, ignore errors
                         logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
                     
-                    # List tools with special handling for different server types
+                    # List tools - try multiple formats
+                    tools_result = None
+                    
+                    # First try: no params
                     try:
-                        # Try with _meta field for servers like Google Workspace MCP (FastMCP)
-                        if "google" in server_name.lower():
-                            tools_result = await client.call("tools/list", {}, include_meta=True)
-                        else:
-                            tools_result = await client.call("tools/list")
+                        logger.debug("[%s] Trying tools/list without params", server_name)
+                        tools_result = await client.call("tools/list")
                     except RuntimeError as e:
-                        if "Invalid request parameters" in str(e):
-                            logger.warning("[%s] tools/list failed, retrying with alternate format", server_name)
-                            try:
-                                # Try with empty params
-                                tools_result = await client.call("tools/list", {})
-                            except RuntimeError:
-                                # Try with _meta
-                                tools_result = await client.call("tools/list", {}, include_meta=True)
-                        else:
-                            raise
+                        logger.debug("[%s] Failed without params: %s", server_name, str(e)[:100])
+                    
+                    # Second try: empty params
+                    if tools_result is None:
+                        try:
+                            logger.debug("[%s] Trying tools/list with empty params", server_name)
+                            tools_result = await client.call("tools/list", {})
+                        except RuntimeError as e:
+                            logger.debug("[%s] Failed with empty params: %s", server_name, str(e)[:100])
+                    
+                    # Third try: with _meta field (for FastMCP)
+                    if tools_result is None and "google" in server_name.lower():
+                        try:
+                            logger.debug("[%s] Trying tools/list with _meta field", server_name)
+                            tools_result = await client.call("tools/list", {}, include_meta=True)
+                        except RuntimeError as e:
+                            logger.debug("[%s] Failed with _meta: %s", server_name, str(e)[:100])
+                    
+                    if tools_result is None:
+                        raise RuntimeError(f"[{server_name}] All tools/list attempts failed")
                     
                     server_tools = tools_result.get("tools", [])
                     

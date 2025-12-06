@@ -70,7 +70,7 @@ class MCPClient:
         self.request_id = 0
         self.session_id = None
 
-    async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
+    async def call(self, method: str, params: Dict[str, Any] | None = None, include_meta: bool = False) -> Any:
         """Send JSON-RPC request and get immediate response."""
         self.request_id += 1
         
@@ -84,6 +84,13 @@ class MCPClient:
         # Some servers require params to be present (even if empty), others don't accept empty params
         if params is not None:
             payload["params"] = params
+        
+        # Some servers (like Google Workspace MCP) may require _meta field
+        if include_meta:
+            payload["_meta"] = {
+                "clientId": None,
+                "serialNumber": None
+            }
         
         headers = {
             "Content-Type": "application/json",
@@ -168,55 +175,74 @@ async def bridge() -> None:
             for server_name, server_config in cfg["servers"].items():
                 if server_config is None:
                     continue
+                
+                try:
+                    logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
                     
-                logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
-                
-                client = MCPClient(
-                    name=server_name,
-                    url=server_config["url"],
-                    timeout=server_config["timeout"],
-                    token=server_config.get("token")
-                )
-                
-                # Initialize session
-                init_result = await client.call("initialize", {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}
-                })
-                logger.info("[%s] Initialized: %s", server_name, init_result)
-                
-                # Send initialized notification (required by some MCP servers like FastMCP)
-                try:
-                    # This is a notification, not a request, so it doesn't expect a response
-                    await client.call("notifications/initialized")
-                    logger.debug("[%s] Sent initialized notification", server_name)
-                except Exception as e:
-                    # Some servers don't implement this, ignore errors
-                    logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
-                
-                # List tools (no params needed for this method)
-                # Try without params first, then with empty params if it fails
-                try:
-                    tools_result = await client.call("tools/list")
-                except RuntimeError as e:
-                    if "Invalid request parameters" in str(e):
-                        logger.warning("[%s] tools/list failed without params, retrying with empty object", server_name)
-                        # Some servers require explicit empty params
-                        tools_result = await client.call("tools/list", {})
-                    else:
-                        raise
-                server_tools = tools_result.get("tools", [])
-                
-                # Add server prefix to tool names to avoid conflicts
-                for tool in server_tools:
-                    tool["_server"] = server_name  # Track which server owns this tool
-                    tool["name"] = f"{server_name}_{tool['name']}"  # Prefix tool name
-                
-                logger.info("[%s] Found %d tools", server_name, len(server_tools))
-                
-                clients[server_name] = client
-                all_tools.extend(server_tools)
+                    client = MCPClient(
+                        name=server_name,
+                        url=server_config["url"],
+                        timeout=server_config["timeout"],
+                        token=server_config.get("token")
+                    )
+                    
+                    # Initialize session
+                    init_result = await client.call("initialize", {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "xiaozhi-bridge", "version": "1.0"}
+                    })
+                    logger.info("[%s] Initialized: %s", server_name, init_result)
+                    
+                    # Send initialized notification (required by some MCP servers like FastMCP)
+                    try:
+                        # This is a notification, not a request, so it doesn't expect a response
+                        await client.call("notifications/initialized")
+                        logger.debug("[%s] Sent initialized notification", server_name)
+                    except Exception as e:
+                        # Some servers don't implement this, ignore errors
+                        logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
+                    
+                    # List tools with special handling for different server types
+                    try:
+                        # Try with _meta field for servers like Google Workspace MCP (FastMCP)
+                        if "google" in server_name.lower():
+                            tools_result = await client.call("tools/list", {}, include_meta=True)
+                        else:
+                            tools_result = await client.call("tools/list")
+                    except RuntimeError as e:
+                        if "Invalid request parameters" in str(e):
+                            logger.warning("[%s] tools/list failed, retrying with alternate format", server_name)
+                            try:
+                                # Try with empty params
+                                tools_result = await client.call("tools/list", {})
+                            except RuntimeError:
+                                # Try with _meta
+                                tools_result = await client.call("tools/list", {}, include_meta=True)
+                        else:
+                            raise
+                    
+                    server_tools = tools_result.get("tools", [])
+                    
+                    # Add server prefix to tool names to avoid conflicts
+                    for tool in server_tools:
+                        tool["_server"] = server_name  # Track which server owns this tool
+                        tool["name"] = f"{server_name}_{tool['name']}"  # Prefix tool name
+                    
+                    logger.info("[%s] Found %d tools", server_name, len(server_tools))
+                    
+                    clients[server_name] = client
+                    all_tools.extend(server_tools)
+                    
+                except Exception as exc:
+                    logger.error("[%s] Failed to initialize: %s", server_name, exc)
+                    logger.warning("[%s] Skipping this server and continuing with others", server_name)
+                    # Continue with other servers even if this one fails
+                    continue
+            
+            if not clients:
+                logger.error("No MCP servers successfully connected!")
+                raise RuntimeError("All MCP servers failed to initialize")
             
             logger.info("Total tools from all servers: %d", len(all_tools))
 

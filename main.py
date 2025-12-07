@@ -30,13 +30,33 @@ def load_config() -> Dict[str, Any]:
     
     # Google Workspace Stdio configuration (optional, recommended)
     google_workspace_stdio_config = None
-    if os.getenv("GOOGLE_WORKSPACE_STDIO_ENABLED", "false").lower() == "true":
+    google_workspace_enabled = os.getenv("GOOGLE_WORKSPACE_STDIO_ENABLED", "false").lower()
+    google_workspace_cwd = os.getenv("GOOGLE_WORKSPACE_STDIO_CWD")
+    google_workspace_cmd = os.getenv("GOOGLE_WORKSPACE_STDIO_COMMAND", "uv")
+    google_workspace_args = os.getenv("GOOGLE_WORKSPACE_STDIO_ARGS", "run,main.py").split(",")
+    google_workspace_args = [arg.strip() for arg in google_workspace_args if arg.strip()]
+    
+    logger.debug(
+        "Google Workspace config check: ENABLED='%s', CWD='%s', CMD='%s', ARGS=%s",
+        google_workspace_enabled,
+        google_workspace_cwd,
+        google_workspace_cmd,
+        google_workspace_args,
+    )
+    
+    if google_workspace_enabled == "true":
         google_workspace_stdio_config = {
-            "command": "uv",
-            "args": ["run", "main.py"],
-            "cwd": os.getenv("GOOGLE_WORKSPACE_STDIO_CWD"),
+            "command": google_workspace_cmd,
+            "args": google_workspace_args,
+            "cwd": google_workspace_cwd,
             "type": "stdio",
         }
+        logger.info(
+            "Google Workspace stdio enabled with CWD: %s (command=%s args=%s)",
+            google_workspace_cwd,
+            google_workspace_cmd,
+            google_workspace_args,
+        )
 
     # Validate required fields
     missing = []

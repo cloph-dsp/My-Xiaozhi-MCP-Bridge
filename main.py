@@ -342,7 +342,11 @@ async def bridge() -> None:
                                 k: v for k, v in os.environ.items()
                                 if k.startswith(("GOOGLE_", "USER_GOOGLE_", "OAUTHLIB_"))
                             }
-                            logger.debug("Passing %d Google env vars to subprocess", len(subprocess_env))
+                            logger.info("Passing %d Google env vars to subprocess: %s", len(subprocess_env), list(subprocess_env.keys()))
+                            if "USER_GOOGLE_EMAIL" in subprocess_env:
+                                logger.info("USER_GOOGLE_EMAIL is set in subprocess env: %s", subprocess_env["USER_GOOGLE_EMAIL"])
+                            else:
+                                logger.error("USER_GOOGLE_EMAIL NOT found in subprocess env!")
                         
                         client = StdioMCPClient(
                             name=server_name,
@@ -524,19 +528,20 @@ async def bridge() -> None:
                                 }
                             else:
                                 logger.info("➤ Calling tool: %s on server %s", original_tool_name, target_server)
-                                logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
-                                # Auto-inject user email for Google Workspace tools if missing
-                                if target_server == "google_workspace" and "user_google_email" not in arguments:
+                                logger.debug("➤ Tool arguments (before injection): %s", json.dumps(arguments)[:200])
+                                
+                                # ALWAYS inject user_google_email for Google Workspace tools
+                                if target_server == "google_workspace":
                                     env_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
                                     valid_email = env_email and "@" in env_email and len(env_email) > 5
                                     if valid_email:
                                         arguments["user_google_email"] = env_email
-                                        logger.debug("➤ Injected user_google_email from env for Google Workspace: %s", env_email)
+                                        logger.info("➤ FORCE-INJECTED user_google_email: %s", env_email)
                                     else:
-                                        logger.error("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set/invalid; call will fail")
-                                if target_server == "google_workspace" and "user_google_email" not in arguments:
-                                    raise RuntimeError("USER_GOOGLE_EMAIL not provided or injection failed; aborting Google Workspace tool call")
-                                logger.debug("➤ Final tool arguments: %s", json.dumps(arguments)[:200])
+                                        logger.error("USER_GOOGLE_EMAIL env is not set/invalid: '%s'", env_email)
+                                        raise RuntimeError("USER_GOOGLE_EMAIL not valid; aborting Google Workspace tool call")
+                                
+                                logger.info("➤ Final tool arguments (after injection): %s", json.dumps(arguments)[:300])
                                 
                                 try:
                                     client = clients[target_server]

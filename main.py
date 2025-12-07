@@ -313,6 +313,151 @@ class StdioMCPClient:
                 await self.process.wait()
 
 
+async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -> str:
+    """Summarize news articles using Gemini 2.5 Flash Lite."""
+    if not gemini_api_key:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not gemini_api_key:
+        logger.warning("GEMINI_API_KEY not set, skipping summarization")
+        return text
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+                json={
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": f"""Summarize this news content in Portuguese (pt-BR) in 2-3 sentences maximum.
+                                    
+Content:
+{text}
+
+Provide ONLY the summary, nothing else."""
+                                }
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "maxOutputTokens": 150,
+                        "temperature": 0.3
+                    }
+                },
+                params={"key": gemini_api_key}
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("candidates"):
+                    summary = result["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.info(f"Summarized news with Gemini (from {len(text)} to {len(summary)} chars)")
+                    return summary.strip()
+            else:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error calling Gemini API: {e}")
+    
+    return text
+
+
+async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -> str:
+    """Summarize news articles using Gemini 2.5 Flash Lite."""
+    if not gemini_api_key:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not gemini_api_key:
+        logger.warning("GEMINI_API_KEY not set, skipping summarization")
+        return text
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+                json={
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": f"""Summarize this news content in Portuguese (pt-BR) in 2-3 sentences maximum.
+
+Content:
+{text}
+
+Provide ONLY the summary, nothing else."""
+                                }
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "maxOutputTokens": 150,
+                        "temperature": 0.3
+                    }
+                },
+                params={"key": gemini_api_key}
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("candidates"):
+                    summary = result["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.info(f"Summarized news with Gemini (from {len(text)} to {len(summary)} chars)")
+                    return summary.strip()
+            else:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error calling Gemini API: {e}")
+    
+    return text
+
+
+async def _optimize_search_result(result: Any, gemini_api_key: str | None = None) -> Any:
+    """Optimize search results using Gemini to summarize snippets."""
+    if not isinstance(result, dict):
+        return result
+    
+    # Handle MCP tool result format with content array
+    if "content" in result and isinstance(result["content"], list):
+        for content_item in result["content"]:
+            if content_item.get("type") == "text" and "text" in content_item:
+                text = content_item["text"]
+                # Try to parse as JSON (search results are often JSON strings)
+                try:
+                    data = json.loads(text)
+                    if "items" in data and isinstance(data["items"], list):
+                        # Limit to 3 results
+                        data["items"] = data["items"][:3]
+                        
+                        # Summarize each snippet with Gemini
+                        for item in data["items"]:
+                            if "snippet" in item:
+                                snippet = item["snippet"]
+                                title = item.get("title", "")
+                                # Combine title and snippet for context
+                                combined = f"{title}\n\n{snippet}"
+                                summarized = await _summarize_with_gemini(combined, gemini_api_key)
+                                item["snippet"] = summarized
+                            
+                            # Remove large metadata
+                            if "pagemap" in item:
+                                del item["pagemap"]
+                        
+                        content_item["text"] = json.dumps(data, ensure_ascii=False)
+                        logger.info("Summarized %d search results with Gemini", len(data["items"]))
+                except (json.JSONDecodeError, KeyError):
+                    # If not JSON or doesn't have expected structure, try to summarize as plain text
+                    if len(text) > 500:
+                        summarized = await _summarize_with_gemini(text, gemini_api_key)
+                        content_item["text"] = summarized
+                        logger.info("Summarized large text response with Gemini")
+    
+    return result
+
+
 async def bridge() -> None:
     cfg = load_config()
     
@@ -418,8 +563,19 @@ async def bridge() -> None:
                     
                     # Filter tools based on server
                     if server_name == "google_workspace":
-                        # Keep only the supported Google Workspace tools
-                        allowed = {"list_calendars", "search_custom", "search_custom_siterestrict"}
+                        # Keep calendar, tasks, and search tools
+                        allowed = {
+                            "get_events",
+                            # Tasks
+                            "list_task_lists",
+                            "list_tasks",
+                            "get_task",
+                            "create_task",
+                            "update_task",
+                            # Search
+                            "search_custom", 
+                            "search_custom_siterestrict"
+                        }
                         server_tools = [t for t in server_tools if t.get("name") in allowed]
                     elif server_name == "supermemory":
                         # Only keep core Supermemory tools
@@ -551,6 +707,12 @@ async def bridge() -> None:
                                     )
                                     logger.info("✓ Tool result received from %s", target_server)
                                     logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
+                                    
+                                    # Summarize search results with Gemini
+                                    if "search" in original_tool_name.lower():
+                                        gemini_key = os.getenv("GEMINI_API_KEY")
+                                        result = await _optimize_search_result(result, gemini_key)
+                                    
                                     response = {
                                         "jsonrpc": "2.0",
                                         "id": request.get("id"),

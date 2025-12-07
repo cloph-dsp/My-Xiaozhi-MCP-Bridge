@@ -199,24 +199,31 @@ class MCPClient:
 class StdioMCPClient:
     """JSON-RPC client for MCP servers running as stdio subprocesses."""
 
-    def __init__(self, name: str, command: str, args: List[str], cwd: str | None = None):
+    def __init__(self, name: str, command: str, args: List[str], cwd: str | None = None, env: Dict[str, str] | None = None):
         self.name = name
         self.command = command
         self.args = args
         self.cwd = cwd
+        self.env = env
         self.process = None
         self.request_id = 0
         self.pending_responses = {}
 
     async def start(self):
         """Start the subprocess."""
+        # Merge parent env with any custom env vars
+        proc_env = os.environ.copy()
+        if self.env:
+            proc_env.update(self.env)
+        
         self.process = await asyncio.create_subprocess_exec(
             self.command,
             *self.args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=self.cwd
+            cwd=self.cwd,
+            env=proc_env
         )
         logger.info("[%s] Started stdio subprocess: %s %s", self.name, self.command, " ".join(self.args))
         
@@ -328,11 +335,21 @@ async def bridge() -> None:
                         logger.info("Starting %s MCP via stdio: %s %s", 
                                     server_name, server_config["command"], " ".join(server_config["args"]))
                         
+                        # For Google Workspace, pass all Google-related env vars to subprocess
+                        subprocess_env = None
+                        if server_name == "google_workspace":
+                            subprocess_env = {
+                                k: v for k, v in os.environ.items()
+                                if k.startswith(("GOOGLE_", "USER_GOOGLE_", "OAUTHLIB_"))
+                            }
+                            logger.debug("Passing %d Google env vars to subprocess", len(subprocess_env))
+                        
                         client = StdioMCPClient(
                             name=server_name,
                             command=server_config["command"],
                             args=server_config["args"],
-                            cwd=server_config.get("cwd")
+                            cwd=server_config.get("cwd"),
+                            env=subprocess_env
                         )
                         
                         await client.start()

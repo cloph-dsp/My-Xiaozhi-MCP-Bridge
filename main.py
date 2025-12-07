@@ -408,8 +408,8 @@ async def bridge() -> None:
                                 filtered.append(tool)
                         server_tools = filtered
                     elif server_name == "supermemory":
-                        # Only keep specific Supermemory tools
-                        allowed = {"search", "addMemory", "whoAmI", "getProjects"}
+                        # Only keep core Supermemory tools (no getProjects/whoAmI)
+                        allowed = {"search", "addMemory"}
                         server_tools = [t for t in server_tools if t.get("name") in allowed]
                     
                     # Add server prefix to tool names to avoid conflicts

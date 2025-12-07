@@ -317,11 +317,11 @@ async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -
     """Summarize news articles using Gemini 2.5 Flash Lite."""
     if not gemini_api_key:
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-    
+
     if not gemini_api_key:
         logger.warning("GEMINI_API_KEY not set, skipping summarization")
         return text
-    
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -333,7 +333,7 @@ async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -
                             "parts": [
                                 {
                                     "text": f"""Summarize this news content in Portuguese (pt-BR) in 2-3 sentences maximum.
-                                    
+
 Content:
 {text}
 
@@ -349,7 +349,7 @@ Provide ONLY the summary, nothing else."""
                 },
                 params={"key": gemini_api_key}
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
                 if result.get("candidates"):
@@ -360,7 +360,7 @@ Provide ONLY the summary, nothing else."""
                 logger.error(f"Gemini API error: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"Error calling Gemini API: {e}")
-    
+
     return text
 
 
@@ -368,11 +368,11 @@ async def _search_with_gemini(query: str, gemini_api_key: str | None = None) -> 
     """Search and summarize news using Gemini 2.5 Flash with web search enabled."""
     if not gemini_api_key:
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-    
+
     if not gemini_api_key:
         logger.warning("GEMINI_API_KEY not set, cannot search")
-        return f"Error: GEMINI_API_KEY not configured"
-    
+        return "Error: GEMINI_API_KEY not configured"
+
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.post(
@@ -407,18 +407,47 @@ Be direct and factual."""
                 },
                 params={"key": gemini_api_key}
             )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("candidates"):
-                    answer = result["candidates"][0]["content"]["parts"][0]["text"]
-                    logger.info(f"Gemini search completed for query: {query}")
-                    return answer.strip()
-            else:
+
+            if response.status_code != 200:
                 logger.error(f"Gemini API error: {response.status_code} - {response.text}")
                 return f"Error: API returned {response.status_code}"
+
+            result = response.json()
+            logger.debug(f"Gemini response keys: {list(result.keys())}")
+
+            candidates = result.get("candidates", [])
+            if not candidates:
+                if "promptFeedback" in result:
+                    logger.error(f"Prompt feedback: {result['promptFeedback']}")
+                logger.error(f"No candidates in response: {list(result.keys())}")
+                return "Error: No candidates in response"
+
+            candidate = candidates[0]
+            logger.debug(f"Candidate keys: {list(candidate.keys())}")
+
+            content = candidate.get("content")
+            if not content:
+                logger.error(f"No content in candidate. Keys: {list(candidate.keys())}")
+                return "Error: No content in candidate"
+
+            logger.debug(f"Content keys: {list(content.keys())}")
+            parts = content.get("parts", [])
+            if not parts:
+                logger.error("No parts in content or parts is empty")
+                logger.debug(f"Full content: {json.dumps(content)[:500]}")
+                return "Error: No parts in response"
+
+            answer = parts[0].get("text", "")
+            if not answer:
+                logger.error("No text in first part")
+                return "Error: No text in response"
+
+            logger.info(f"Gemini search completed for query: {query}")
+            return answer.strip()
     except Exception as e:
         logger.error(f"Error calling Gemini search: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()[:500]}")
         return f"Error: {str(e)}"
 
 
@@ -430,62 +459,26 @@ async def _optimize_search_result(result: Any, gemini_api_key: str | None = None
 
 async def bridge() -> None:
     cfg = load_config()
-    
+
     # Initialize all enabled MCP clients
-    clients = {}
-    all_tools = []
-    
+    clients: Dict[str, Any] = {}
+    all_tools: List[Dict[str, Any]] = []
+
     while True:
         try:
-                                logger.error(f"Missing content/parts in candidate: {list(candidate.keys())}")
-                    if response.status_code == 200:
-                        result = response.json()
-                        logger.debug(f"Gemini response keys: {list(result.keys())}")
-                        if result.get("candidates") and len(result["candidates"]) > 0:
-                            candidate = result["candidates"][0]
-                            logger.debug(f"Candidate keys: {list(candidate.keys())}")
-                            if "content" in candidate:
-                                logger.debug(f"Content keys: {list(candidate['content'].keys())}")
-                                if "parts" in candidate["content"] and len(candidate["content"]["parts"]) > 0:
-                                    answer = candidate["content"]["parts"][0].get("text", "")
-                                    if answer:
-                                        logger.info(f"Gemini search completed for query: {query}")
-                                        return answer.strip()
-                                    else:
-                                        logger.error(f"No text in first part")
-                                        return "Error: No text in response"
-                                else:
-                                    logger.error(f"No parts in content or parts is empty")
-                                    logger.debug(f"Full content: {json.dumps(candidate['content'])[:500]}")
-                                    return f"Error: No parts in response"
-                            else:
-                                logger.error(f"No content in candidate. Keys: {list(candidate.keys())}")
-                                return f"Error: No content in candidate"
-                        else:
-                            logger.error(f"No candidates or candidates list empty. Keys: {list(result.keys())}")
-                            if "promptFeedback" in result:
-                                logger.error(f"Prompt feedback: {result['promptFeedback']}")
-                            return f"Error: No candidates in response"
-                    else:
-                        logger.error(f"Gemini API error: {response.status_code} - {response.text}")
-                        return f"Error: API returned {response.status_code}"
-            except Exception as e:
-                logger.error(f"Error calling Gemini search: {e}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()[:500]}")
-                return f"Error: {str(e)}"
-                                return f"Error: Unexpected response format"
-                        else:
-                            logger.error(f"No candidates in response: {list(result.keys())}")
-                            return f"Error: No candidates in response"
-                    else:
-                        logger.error(f"Gemini API error: {response.status_code} - {response.text}")
-                        return f"Error: API returned {response.status_code}"
-            except Exception as e:
-                logger.error(f"Error calling Gemini search: {e}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                return f"Error: {str(e)}"
+            # Connect to all enabled MCP servers
+            for server_name, server_config in cfg["servers"].items():
+                if server_config is None:
+                    continue
+
+                try:
+                    server_type = server_config.get("type", "http")
+
+                    if server_type == "stdio":
+                        # Stdio subprocess client
+                        logger.info("Starting %s MCP via stdio: %s %s",
+                                    server_name, server_config["command"], " ".join(server_config["args"]))
+
                         # For Google Workspace, pass all Google-related env vars to subprocess
                         subprocess_env = None
                         if server_name == "google_workspace":
@@ -498,7 +491,7 @@ async def bridge() -> None:
                                 logger.info("USER_GOOGLE_EMAIL is set in subprocess env: %s", subprocess_env["USER_GOOGLE_EMAIL"])
                             else:
                                 logger.error("USER_GOOGLE_EMAIL NOT found in subprocess env!")
-                        
+
                         client = StdioMCPClient(
                             name=server_name,
                             command=server_config["command"],
@@ -506,13 +499,13 @@ async def bridge() -> None:
                             cwd=server_config.get("cwd"),
                             env=subprocess_env
                         )
-                        
+
                         await client.start()
-                        
+
                     else:
                         # HTTP/SSE client
                         logger.info("Connecting to %s MCP at %s", server_name, server_config["url"])
-                        
+
                         client = MCPClient(
                             name=server_name,
                             url=server_config["url"],

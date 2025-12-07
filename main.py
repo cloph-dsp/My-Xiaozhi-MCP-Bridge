@@ -40,6 +40,7 @@ def load_config() -> Dict[str, Any]:
     google_workspace_args = [arg.strip() for arg in google_workspace_args if arg.strip()]
 
     user_google_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
+    valid_email = user_google_email and "@" in user_google_email and len(user_google_email) > 5
     
     logger.debug(
         "Google Workspace config check: ENABLED='%s', CWD='%s', CMD='%s', ARGS=%s, USER_GOOGLE_EMAIL='%s'",
@@ -47,7 +48,7 @@ def load_config() -> Dict[str, Any]:
         google_workspace_cwd,
         google_workspace_cmd,
         google_workspace_args,
-        (user_google_email[-4:] if user_google_email else ""),
+        (user_google_email[-4:] if valid_email else "(missing/invalid)"),
     )
     
     if google_workspace_enabled == "true":
@@ -73,8 +74,8 @@ def load_config() -> Dict[str, Any]:
     if google_workspace_stdio_config:
         if not google_workspace_stdio_config["cwd"]:
             missing.append("GOOGLE_WORKSPACE_STDIO_CWD")
-        if not user_google_email:
-            missing.append("USER_GOOGLE_EMAIL")
+        if not valid_email:
+            missing.append("USER_GOOGLE_EMAIL (must look like an email)")
     
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
@@ -355,14 +356,13 @@ async def bridge() -> None:
                     })
                     logger.info("[%s] Initialized: %s", server_name, init_result)
                     
-                    # Send initialized notification (required by some MCP servers like FastMCP)
-                    try:
-                        # This is a notification, not a request, so it doesn't expect a response
-                        await client.call("notifications/initialized")
-                        logger.debug("[%s] Sent initialized notification", server_name)
-                    except Exception as e:
-                        # Some servers don't implement this, ignore errors
-                        logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
+                    # Send initialized notification (skip for Google Workspace, which rejects it)
+                    if server_name != "google_workspace":
+                        try:
+                            await client.call("notifications/initialized")
+                            logger.debug("[%s] Sent initialized notification", server_name)
+                        except Exception as e:
+                            logger.debug("[%s] Initialized notification not supported: %s", server_name, e)
                     
                     # List tools - try multiple formats
                     tools_result = None
@@ -511,11 +511,12 @@ async def bridge() -> None:
                                 # Auto-inject user email for Google Workspace tools if missing
                                 if target_server == "google_workspace" and "user_google_email" not in arguments:
                                     env_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
-                                    if env_email:
+                                    valid_email = env_email and "@" in env_email and len(env_email) > 5
+                                    if valid_email:
                                         arguments["user_google_email"] = env_email
                                         logger.debug("➤ Injected user_google_email from env for Google Workspace: %s", env_email)
                                     else:
-                                        logger.error("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set/blank; call will fail")
+                                        logger.error("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set/invalid; call will fail")
                                 if target_server == "google_workspace" and "user_google_email" not in arguments:
                                     raise RuntimeError("USER_GOOGLE_EMAIL not provided or injection failed; aborting Google Workspace tool call")
                                 logger.debug("➤ Final tool arguments: %s", json.dumps(arguments)[:200])

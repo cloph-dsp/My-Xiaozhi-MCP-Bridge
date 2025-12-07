@@ -38,13 +38,16 @@ def load_config() -> Dict[str, Any]:
         "run,main.py,--transport,stdio"
     ).split(",")
     google_workspace_args = [arg.strip() for arg in google_workspace_args if arg.strip()]
+
+    user_google_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
     
     logger.debug(
-        "Google Workspace config check: ENABLED='%s', CWD='%s', CMD='%s', ARGS=%s",
+        "Google Workspace config check: ENABLED='%s', CWD='%s', CMD='%s', ARGS=%s, USER_GOOGLE_EMAIL='%s'",
         google_workspace_enabled,
         google_workspace_cwd,
         google_workspace_cmd,
         google_workspace_args,
+        (user_google_email[-4:] if user_google_email else ""),
     )
     
     if google_workspace_enabled == "true":
@@ -70,7 +73,7 @@ def load_config() -> Dict[str, Any]:
     if google_workspace_stdio_config:
         if not google_workspace_stdio_config["cwd"]:
             missing.append("GOOGLE_WORKSPACE_STDIO_CWD")
-        if not os.getenv("USER_GOOGLE_EMAIL"):
+        if not user_google_email:
             missing.append("USER_GOOGLE_EMAIL")
     
     if missing:
@@ -507,12 +510,12 @@ async def bridge() -> None:
                                 logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
                                 # Auto-inject user email for Google Workspace tools if missing
                                 if target_server == "google_workspace" and "user_google_email" not in arguments:
-                                    env_email = os.getenv("USER_GOOGLE_EMAIL")
+                                    env_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
                                     if env_email:
                                         arguments["user_google_email"] = env_email
-                                        logger.debug("➤ Injected user_google_email from env for Google Workspace")
+                                        logger.debug("➤ Injected user_google_email from env for Google Workspace: %s", env_email)
                                     else:
-                                        logger.warning("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set")
+                                        logger.error("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set/blank; call will fail")
                                 
                                 try:
                                     client = clients[target_server]

@@ -516,6 +516,9 @@ async def bridge() -> None:
                                         logger.debug("➤ Injected user_google_email from env for Google Workspace: %s", env_email)
                                     else:
                                         logger.error("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set/blank; call will fail")
+                                if target_server == "google_workspace" and "user_google_email" not in arguments:
+                                    raise RuntimeError("USER_GOOGLE_EMAIL not provided or injection failed; aborting Google Workspace tool call")
+                                logger.debug("➤ Final tool arguments: %s", json.dumps(arguments)[:200])
                                 
                                 try:
                                     client = clients[target_server]

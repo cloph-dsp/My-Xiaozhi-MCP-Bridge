@@ -374,7 +374,7 @@ async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -
         return text
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.post(
                 "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
                 json={
@@ -383,7 +383,8 @@ async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -
                             "role": "user",
                             "parts": [
                                 {
-                                    "text": f"""Summarize this news content in Portuguese (pt-BR) in 2-3 sentences maximum.
+                                    "text": f"""Summarize this search result in Portuguese (pt-BR) in 1-2 sentences maximum. 
+Be concise and include only the most important information.
 
 Content:
 {text}
@@ -394,8 +395,8 @@ Provide ONLY the summary, nothing else."""
                         }
                     ],
                     "generationConfig": {
-                        "maxOutputTokens": 150,
-                        "temperature": 0.3
+                        "maxOutputTokens": 200,
+                        "temperature": 0.2
                     }
                 },
                 params={"key": gemini_api_key}
@@ -405,7 +406,7 @@ Provide ONLY the summary, nothing else."""
                 result = response.json()
                 if result.get("candidates"):
                     summary = result["candidates"][0]["content"]["parts"][0]["text"]
-                    logger.info(f"Summarized news with Gemini (from {len(text)} to {len(summary)} chars)")
+                    logger.info(f"Summarized with Gemini (from {len(text)} to {len(summary)} chars)")
                     return summary.strip()
             else:
                 logger.error(f"Gemini API error: {response.status_code} - {response.text}")
@@ -416,7 +417,7 @@ Provide ONLY the summary, nothing else."""
 
 
 async def _optimize_search_result(result: Any, gemini_api_key: str | None = None) -> Any:
-    """Optimize search results using Gemini to summarize snippets."""
+    """Optimize search results using Gemini to summarize the entire response."""
     if not isinstance(result, dict):
         return result
     
@@ -425,35 +426,12 @@ async def _optimize_search_result(result: Any, gemini_api_key: str | None = None
         for content_item in result["content"]:
             if content_item.get("type") == "text" and "text" in content_item:
                 text = content_item["text"]
-                # Try to parse as JSON (search results are often JSON strings)
-                try:
-                    data = json.loads(text)
-                    if "items" in data and isinstance(data["items"], list):
-                        # Limit to 3 results
-                        data["items"] = data["items"][:3]
-                        
-                        # Summarize each snippet with Gemini
-                        for item in data["items"]:
-                            if "snippet" in item:
-                                snippet = item["snippet"]
-                                title = item.get("title", "")
-                                # Combine title and snippet for context
-                                combined = f"{title}\n\n{snippet}"
-                                summarized = await _summarize_with_gemini(combined, gemini_api_key)
-                                item["snippet"] = summarized
-                            
-                            # Remove large metadata
-                            if "pagemap" in item:
-                                del item["pagemap"]
-                        
-                        content_item["text"] = json.dumps(data, ensure_ascii=False)
-                        logger.info("Summarized %d search results with Gemini", len(data["items"]))
-                except (json.JSONDecodeError, KeyError):
-                    # If not JSON or doesn't have expected structure, try to summarize as plain text
-                    if len(text) > 500:
-                        summarized = await _summarize_with_gemini(text, gemini_api_key)
-                        content_item["text"] = summarized
-                        logger.info("Summarized large text response with Gemini")
+                
+                # Always summarize the entire response with Gemini (much more effective)
+                if len(text) > 300:  # Only summarize if response is substantial
+                    summarized = await _summarize_with_gemini(text, gemini_api_key)
+                    content_item["text"] = summarized
+                    logger.info("Summarized search response with Gemini (from %d to %d chars)", len(text), len(summarized))
     
     return result
 

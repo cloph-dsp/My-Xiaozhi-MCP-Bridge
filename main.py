@@ -403,8 +403,7 @@ Be direct and factual."""
                         {
                             "googleSearch": {}
                         }
-                    ],
-                    "responseMimeType": "text/plain"
+                    ]
                 },
                 params={"key": gemini_api_key}
             )
@@ -433,16 +432,26 @@ Be direct and factual."""
                 return "Error: No content in candidate"
 
             logger.debug(f"Content keys: {list(content.keys())}")
-            parts = content.get("parts", [])
+            parts = content.get("parts", []) or []
+
+            # Fallbacks: some responses may omit parts when tools are involved; use text fields if present
+            if not parts and content.get("text"):
+                parts = [{"text": content.get("text")}]  # synthesize part from content text
+
+            if not parts and candidate.get("text"):
+                parts = [{"text": candidate.get("text")}]  # synthesize part from candidate text
+
             if not parts:
-                logger.error("No parts in content or parts is empty")
+                logger.error("No parts/text in content; cannot extract answer")
                 logger.debug(f"Full content: {json.dumps(content)[:1000]}")
+                logger.debug(f"Full candidate: {json.dumps(candidate)[:1000]}")
                 return "Error: No parts in response"
 
             answer = parts[0].get("text", "")
             if not answer:
                 logger.error("No text in first part")
                 logger.debug(f"First part: {json.dumps(parts[0])[:500]}")
+                logger.debug(f"Full content: {json.dumps(content)[:1000]}")
                 return "Error: No text in response"
 
             logger.info(f"Gemini search completed for query: {query}")

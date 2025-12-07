@@ -364,40 +364,46 @@ Provide ONLY the summary, nothing else."""
     return text
 
 
-async def _summarize_with_gemini(text: str, gemini_api_key: str | None = None) -> str:
-    """Summarize news articles using Gemini 2.5 Flash Lite."""
+async def _search_with_gemini(query: str, gemini_api_key: str | None = None) -> str:
+    """Search and summarize news using Gemini 2.5 Flash with web search enabled."""
     if not gemini_api_key:
         gemini_api_key = os.getenv("GEMINI_API_KEY")
     
     if not gemini_api_key:
-        logger.warning("GEMINI_API_KEY not set, skipping summarization")
-        return text
+        logger.warning("GEMINI_API_KEY not set, cannot search")
+        return f"Error: GEMINI_API_KEY not configured"
     
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
                 json={
                     "contents": [
                         {
                             "role": "user",
                             "parts": [
                                 {
-                                    "text": f"""Summarize this search result in Portuguese (pt-BR) in 1-2 sentences maximum. 
-Be concise and include only the most important information.
+                                    "text": f"""Search for recent news about: {query}
 
-Content:
-{text}
+Provide a concise summary in Portuguese (pt-BR) with:
+1. 2-3 main points about the topic
+2. Key sources/outlets mentioned
+3. Keep it to 2-3 sentences maximum
 
-Provide ONLY the summary, nothing else."""
+Be direct and factual."""
                                 }
                             ]
                         }
                     ],
                     "generationConfig": {
                         "maxOutputTokens": 200,
-                        "temperature": 0.2
-                    }
+                        "temperature": 0.3
+                    },
+                    "tools": [
+                        {
+                            "googleSearch": {}
+                        }
+                    ]
                 },
                 params={"key": gemini_api_key}
             )
@@ -405,34 +411,20 @@ Provide ONLY the summary, nothing else."""
             if response.status_code == 200:
                 result = response.json()
                 if result.get("candidates"):
-                    summary = result["candidates"][0]["content"]["parts"][0]["text"]
-                    logger.info(f"Summarized with Gemini (from {len(text)} to {len(summary)} chars)")
-                    return summary.strip()
+                    answer = result["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.info(f"Gemini search completed for query: {query}")
+                    return answer.strip()
             else:
                 logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                return f"Error: API returned {response.status_code}"
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {e}")
-    
-    return text
+        logger.error(f"Error calling Gemini search: {e}")
+        return f"Error: {str(e)}"
 
 
 async def _optimize_search_result(result: Any, gemini_api_key: str | None = None) -> Any:
-    """Optimize search results using Gemini to summarize the entire response."""
-    if not isinstance(result, dict):
-        return result
-    
-    # Handle MCP tool result format with content array
-    if "content" in result and isinstance(result["content"], list):
-        for content_item in result["content"]:
-            if content_item.get("type") == "text" and "text" in content_item:
-                text = content_item["text"]
-                
-                # Always summarize the entire response with Gemini (much more effective)
-                if len(text) > 300:  # Only summarize if response is substantial
-                    summarized = await _summarize_with_gemini(text, gemini_api_key)
-                    content_item["text"] = summarized
-                    logger.info("Summarized search response with Gemini (from %d to %d chars)", len(text), len(summarized))
-    
+    """Convert search result to use Gemini search instead."""
+    # For now, just pass through - the search will be handled by Gemini directly
     return result
 
 
@@ -549,10 +541,8 @@ async def bridge() -> None:
                             "list_tasks",
                             "get_task",
                             "create_task",
-                            "update_task",
-                            # Search
-                            "search_custom", 
-                            "search_custom_siterestrict"
+                            "update_task"
+                            # Removed search tools - using Gemini search instead
                         }
                         server_tools = [t for t in server_tools if t.get("name") in allowed]
                     elif server_name == "supermemory":
@@ -566,6 +556,25 @@ async def bridge() -> None:
                         tool["name"] = f"{server_name}_{tool['name']}"  # Prefix tool name
                     
                     logger.info("[%s] Found %d tools", server_name, len(server_tools))
+                    
+                    # Add virtual Gemini search tool for google_workspace
+                    if server_name == "google_workspace":
+                        gemini_search_tool = {
+                            "name": "google_workspace_search_gemini",
+                            "_server": "google_workspace",
+                            "description": "Search news with Gemini AI web search - returns concise summaries",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "q": {
+                                        "type": "string",
+                                        "description": "Search query"
+                                    }
+                                },
+                                "required": ["q"]
+                            }
+                        }
+                        server_tools.append(gemini_search_tool)
                     
                     clients[server_name] = client
                     all_tools.extend(server_tools)
@@ -677,35 +686,52 @@ async def bridge() -> None:
                                 
                                 logger.info("➤ Final tool arguments (after injection): %s", json.dumps(arguments)[:300])
                                 
-                                try:
-                                    client = clients[target_server]
-                                    result = await asyncio.wait_for(
-                                        client.call("tools/call", {"name": original_tool_name, "arguments": arguments}),
-                                        timeout=60.0  # 60 second timeout for tool calls
-                                    )
-                                    logger.info("✓ Tool result received from %s", target_server)
-                                    logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
-                                    
-                                    # Summarize search results with Gemini
-                                    if "search" in original_tool_name.lower():
-                                        gemini_key = os.getenv("GEMINI_API_KEY")
-                                        result = await _optimize_search_result(result, gemini_key)
-                                    
+                                # Handle virtual Gemini search tool
+                                if original_tool_name == "search_gemini":
+                                    logger.info("➤ Calling Gemini search (virtual tool)")
+                                    query = arguments.get("q", "")
+                                    gemini_key = os.getenv("GEMINI_API_KEY")
+                                    search_result = await _search_with_gemini(query, gemini_key)
+                                    result = {
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": search_result
+                                            }
+                                        ]
+                                    }
+                                    logger.info("✓ Gemini search completed")
                                     response = {
                                         "jsonrpc": "2.0",
                                         "id": request.get("id"),
                                         "result": result
                                     }
-                                except asyncio.TimeoutError:
-                                    logger.error("✗ Tool call timeout for %s on %s", original_tool_name, target_server)
-                                    response = {
-                                        "jsonrpc": "2.0",
-                                        "id": request.get("id"),
-                                        "error": {
-                                            "code": -32603,
-                                            "message": f"Tool call timeout: {tool_name}"
+                                else:
+                                    # Normal tool call to MCP server
+                                    try:
+                                        client = clients[target_server]
+                                        result = await asyncio.wait_for(
+                                            client.call("tools/call", {"name": original_tool_name, "arguments": arguments}),
+                                            timeout=60.0  # 60 second timeout for tool calls
+                                        )
+                                        logger.info("✓ Tool result received from %s", target_server)
+                                        logger.debug("✓ Tool result: %s", json.dumps(result)[:500])
+                                        
+                                        response = {
+                                            "jsonrpc": "2.0",
+                                            "id": request.get("id"),
+                                            "result": result
                                         }
-                                    }
+                                    except asyncio.TimeoutError:
+                                        logger.error("✗ Tool call timeout for %s on %s", original_tool_name, target_server)
+                                        response = {
+                                            "jsonrpc": "2.0",
+                                            "id": request.get("id"),
+                                            "error": {
+                                                "code": -32603,
+                                                "message": f"Tool call timeout: {tool_name}"
+                                            }
+                                        }
                         elif method == "ping":
                             # Handle ping (heartbeat)
                             response = {

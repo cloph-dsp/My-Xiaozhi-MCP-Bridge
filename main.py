@@ -396,7 +396,7 @@ Be direct and factual."""
                         }
                     ],
                     "generationConfig": {
-                        "maxOutputTokens": 200,
+                        "maxOutputTokens": 800,
                         "temperature": 0.3
                     },
                     "tools": [

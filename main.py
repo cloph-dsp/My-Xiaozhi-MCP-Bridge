@@ -389,20 +389,28 @@ async def bridge() -> None:
                     
                     server_tools = tools_result.get("tools", [])
                     
-                    # Slim down and filter Google Workspace tools
+                    # Filter tools based on server
                     if server_name == "google_workspace":
-                        # Only keep calendar/search tools as requested
-                        allow_keywords = ("calendar", "search")
+                        # Only keep specific Google Workspace tools
+                        allowed = {
+                            "list_calendars",
+                            "search_custom",
+                            "search_custom_siterestrict"
+                        }
                         filtered = []
                         for tool in server_tools:
-                            name = tool.get("name", "").lower()
-                            if any(k in name for k in allow_keywords):
-                                # Keep name/description, drop verbose schemas to reduce payload size
+                            name = tool.get("name", "")
+                            if name in allowed:
+                                # Drop verbose schemas to reduce payload size
                                 tool.pop("inputSchema", None)
                                 if isinstance(tool.get("description"), str) and len(tool["description"]) > 400:
                                     tool["description"] = tool["description"][:400] + "..."
                                 filtered.append(tool)
                         server_tools = filtered
+                    elif server_name == "supermemory":
+                        # Only keep specific Supermemory tools
+                        allowed = {"search", "addMemory", "whoAmI", "getProjects"}
+                        server_tools = [t for t in server_tools if t.get("name") in allowed]
                     
                     # Add server prefix to tool names to avoid conflicts
                     for tool in server_tools:

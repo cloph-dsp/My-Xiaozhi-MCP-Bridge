@@ -437,19 +437,31 @@ async def bridge() -> None:
     
     while True:
         try:
-            # Connect to all enabled MCP servers
-            for server_name, server_config in cfg["servers"].items():
-                if server_config is None:
-                    continue
-                
-                try:
-                    server_type = server_config.get("type", "http")
-                    
-                    if server_type == "stdio":
-                        # Stdio subprocess client
-                        logger.info("Starting %s MCP via stdio: %s %s", 
-                                    server_name, server_config["command"], " ".join(server_config["args"]))
                         
+                    if response.status_code == 200:
+                        result = response.json()
+                        logger.debug(f"Gemini response: {json.dumps(result)[:1000]}")
+                        if result.get("candidates") and len(result["candidates"]) > 0:
+                            candidate = result["candidates"][0]
+                            logger.debug(f"First candidate: {json.dumps(candidate)[:500]}")
+                            if "content" in candidate and "parts" in candidate["content"]:
+                                answer = candidate["content"]["parts"][0].get("text", "")
+                                logger.info(f"Gemini search completed for query: {query}")
+                                return answer.strip() if answer else "No answer returned"
+                            else:
+                                logger.error(f"Missing content/parts in candidate: {list(candidate.keys())}")
+                                return f"Error: Unexpected response format"
+                        else:
+                            logger.error(f"No candidates in response: {list(result.keys())}")
+                            return f"Error: No candidates in response"
+                    else:
+                        logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                        return f"Error: API returned {response.status_code}"
+            except Exception as e:
+                logger.error(f"Error calling Gemini search: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return f"Error: {str(e)}"
                         # For Google Workspace, pass all Google-related env vars to subprocess
                         subprocess_env = None
                         if server_name == "google_workspace":

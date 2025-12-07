@@ -389,6 +389,21 @@ async def bridge() -> None:
                     
                     server_tools = tools_result.get("tools", [])
                     
+                    # Slim down and filter Google Workspace tools
+                    if server_name == "google_workspace":
+                        # Only keep calendar/search tools as requested
+                        allow_keywords = ("calendar", "search")
+                        filtered = []
+                        for tool in server_tools:
+                            name = tool.get("name", "").lower()
+                            if any(k in name for k in allow_keywords):
+                                # Keep name/description, drop verbose schemas to reduce payload size
+                                tool.pop("inputSchema", None)
+                                if isinstance(tool.get("description"), str) and len(tool["description"]) > 400:
+                                    tool["description"] = tool["description"][:400] + "..."
+                                filtered.append(tool)
+                        server_tools = filtered
+                    
                     # Add server prefix to tool names to avoid conflicts
                     for tool in server_tools:
                         tool["_server"] = server_name  # Track which server owns this tool

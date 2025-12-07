@@ -437,19 +437,43 @@ async def bridge() -> None:
     
     while True:
         try:
-                        
+                                logger.error(f"Missing content/parts in candidate: {list(candidate.keys())}")
                     if response.status_code == 200:
                         result = response.json()
-                        logger.debug(f"Gemini response: {json.dumps(result)[:1000]}")
+                        logger.debug(f"Gemini response keys: {list(result.keys())}")
                         if result.get("candidates") and len(result["candidates"]) > 0:
                             candidate = result["candidates"][0]
-                            logger.debug(f"First candidate: {json.dumps(candidate)[:500]}")
-                            if "content" in candidate and "parts" in candidate["content"]:
-                                answer = candidate["content"]["parts"][0].get("text", "")
-                                logger.info(f"Gemini search completed for query: {query}")
-                                return answer.strip() if answer else "No answer returned"
+                            logger.debug(f"Candidate keys: {list(candidate.keys())}")
+                            if "content" in candidate:
+                                logger.debug(f"Content keys: {list(candidate['content'].keys())}")
+                                if "parts" in candidate["content"] and len(candidate["content"]["parts"]) > 0:
+                                    answer = candidate["content"]["parts"][0].get("text", "")
+                                    if answer:
+                                        logger.info(f"Gemini search completed for query: {query}")
+                                        return answer.strip()
+                                    else:
+                                        logger.error(f"No text in first part")
+                                        return "Error: No text in response"
+                                else:
+                                    logger.error(f"No parts in content or parts is empty")
+                                    logger.debug(f"Full content: {json.dumps(candidate['content'])[:500]}")
+                                    return f"Error: No parts in response"
                             else:
-                                logger.error(f"Missing content/parts in candidate: {list(candidate.keys())}")
+                                logger.error(f"No content in candidate. Keys: {list(candidate.keys())}")
+                                return f"Error: No content in candidate"
+                        else:
+                            logger.error(f"No candidates or candidates list empty. Keys: {list(result.keys())}")
+                            if "promptFeedback" in result:
+                                logger.error(f"Prompt feedback: {result['promptFeedback']}")
+                            return f"Error: No candidates in response"
+                    else:
+                        logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                        return f"Error: API returned {response.status_code}"
+            except Exception as e:
+                logger.error(f"Error calling Gemini search: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()[:500]}")
+                return f"Error: {str(e)}"
                                 return f"Error: Unexpected response format"
                         else:
                             logger.error(f"No candidates in response: {list(result.keys())}")

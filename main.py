@@ -391,24 +391,11 @@ async def bridge() -> None:
                     
                     # Filter tools based on server
                     if server_name == "google_workspace":
-                        # Only keep specific Google Workspace tools
-                        allowed = {
-                            "list_calendars",
-                            "search_custom",
-                            "search_custom_siterestrict"
-                        }
-                        filtered = []
-                        for tool in server_tools:
-                            name = tool.get("name", "")
-                            if name in allowed:
-                                # Drop verbose schemas to reduce payload size
-                                tool.pop("inputSchema", None)
-                                if isinstance(tool.get("description"), str) and len(tool["description"]) > 400:
-                                    tool["description"] = tool["description"][:400] + "..."
-                                filtered.append(tool)
-                        server_tools = filtered
+                        # Keep only the supported Google Workspace tools
+                        allowed = {"list_calendars", "search_custom", "search_custom_siterestrict"}
+                        server_tools = [t for t in server_tools if t.get("name") in allowed]
                     elif server_name == "supermemory":
-                        # Only keep core Supermemory tools (no getProjects/whoAmI)
+                        # Only keep core Supermemory tools
                         allowed = {"search", "addMemory"}
                         server_tools = [t for t in server_tools if t.get("name") in allowed]
                     
@@ -515,6 +502,14 @@ async def bridge() -> None:
                             else:
                                 logger.info("➤ Calling tool: %s on server %s", original_tool_name, target_server)
                                 logger.debug("➤ Tool arguments: %s", json.dumps(arguments)[:200])
+                                # Auto-inject user email for Google Workspace tools if missing
+                                if target_server == "google_workspace" and "user_google_email" not in arguments:
+                                    env_email = os.getenv("USER_GOOGLE_EMAIL")
+                                    if env_email:
+                                        arguments["user_google_email"] = env_email
+                                        logger.debug("➤ Injected user_google_email from env for Google Workspace")
+                                    else:
+                                        logger.warning("Google Workspace call missing user_google_email and env USER_GOOGLE_EMAIL is not set")
                                 
                                 try:
                                     client = clients[target_server]

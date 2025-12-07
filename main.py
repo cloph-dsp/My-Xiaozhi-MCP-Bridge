@@ -219,22 +219,32 @@ class StdioMCPClient:
         asyncio.create_task(self._read_stderr())
 
     async def _read_responses(self):
-        """Background task to read JSON-RPC responses from stdout."""
+        """Background task to read JSON-RPC responses from stdout (chunked, no line limit)."""
+        buffer = b""
         try:
-            async for line in self.process.stdout:
-                try:
-                    response = json.loads(line.decode().strip())
-                    req_id = response.get("id")
-                    if req_id and req_id in self.pending_responses:
-                        future = self.pending_responses.pop(req_id)
-                        if "error" in response:
-                            future.set_exception(RuntimeError(f"JSON-RPC error: {response['error']}"))
+            while True:
+                chunk = await self.process.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        response = json.loads(line.decode())
+                        req_id = response.get("id")
+                        if req_id and req_id in self.pending_responses:
+                            future = self.pending_responses.pop(req_id)
+                            if "error" in response:
+                                future.set_exception(RuntimeError(f"JSON-RPC error: {response['error']}"))
+                            else:
+                                future.set_result(response.get("result"))
                         else:
-                            future.set_result(response.get("result"))
-                    else:
-                        logger.debug("[%s] Received response without pending request: %s", self.name, response)
-                except json.JSONDecodeError:
-                    logger.warning("[%s] Invalid JSON from stdout: %s", self.name, line[:100])
+                            logger.debug("[%s] Received response without pending request: %s", self.name, response)
+                    except json.JSONDecodeError:
+                        logger.warning("[%s] Invalid JSON from stdout: %s", self.name, line[:200])
         except Exception as e:
             logger.error("[%s] Error reading responses: %s", self.name, e)
 

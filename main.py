@@ -67,8 +67,11 @@ def load_config() -> Dict[str, Any]:
         missing.append("XIAOZHI_WSS_URL")
     if not supermemory_config["token"]:
         missing.append("SUPERMEMORY_TOKEN")
-    if google_workspace_stdio_config and not google_workspace_stdio_config["cwd"]:
-        missing.append("GOOGLE_WORKSPACE_STDIO_CWD")
+    if google_workspace_stdio_config:
+        if not google_workspace_stdio_config["cwd"]:
+            missing.append("GOOGLE_WORKSPACE_STDIO_CWD")
+        if not os.getenv("USER_GOOGLE_EMAIL"):
+            missing.append("USER_GOOGLE_EMAIL")
     
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")

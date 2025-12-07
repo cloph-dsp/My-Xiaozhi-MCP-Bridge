@@ -33,7 +33,10 @@ def load_config() -> Dict[str, Any]:
     google_workspace_enabled = os.getenv("GOOGLE_WORKSPACE_STDIO_ENABLED", "false").lower()
     google_workspace_cwd = os.getenv("GOOGLE_WORKSPACE_STDIO_CWD")
     google_workspace_cmd = os.getenv("GOOGLE_WORKSPACE_STDIO_COMMAND", "uv")
-    google_workspace_args = os.getenv("GOOGLE_WORKSPACE_STDIO_ARGS", "run,main.py").split(",")
+    google_workspace_args = os.getenv(
+        "GOOGLE_WORKSPACE_STDIO_ARGS",
+        "run,main.py,--transport,stdio"
+    ).split(",")
     google_workspace_args = [arg.strip() for arg in google_workspace_args if arg.strip()]
     
     logger.debug(
@@ -212,6 +215,8 @@ class StdioMCPClient:
         
         # Start background task to read responses
         asyncio.create_task(self._read_responses())
+        # Start background task to log stderr
+        asyncio.create_task(self._read_stderr())
 
     async def _read_responses(self):
         """Background task to read JSON-RPC responses from stdout."""
@@ -232,6 +237,14 @@ class StdioMCPClient:
                     logger.warning("[%s] Invalid JSON from stdout: %s", self.name, line[:100])
         except Exception as e:
             logger.error("[%s] Error reading responses: %s", self.name, e)
+
+    async def _read_stderr(self):
+        """Background task to read stderr for diagnostics."""
+        try:
+            async for line in self.process.stderr:
+                logger.error("[%s][stderr] %s", self.name, line.decode(errors="ignore").rstrip())
+        except Exception as e:
+            logger.error("[%s] Error reading stderr: %s", self.name, e)
 
     async def call(self, method: str, params: Dict[str, Any] | None = None) -> Any:
         """Send JSON-RPC request via stdin and wait for response from stdout."""

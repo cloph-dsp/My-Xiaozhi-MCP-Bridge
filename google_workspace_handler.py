@@ -1,11 +1,27 @@
 """Google Workspace handler for calendar and tasks operations."""
 import asyncio
 import logging
+import re
 from typing import Any, Dict
 
 from config import Config
 
 logger = logging.getLogger("bridge")
+
+
+def _parse_task_lists_from_text(text: str):
+    """Parse task list IDs from text content using regex.
+    
+    Expects format: "- Name (ID: SOME_ID)"
+    Returns: list of dicts with 'id' field, or None if no IDs found
+    """
+    pattern = r'\(ID:\s*([^\)]+)\)'
+    matches = re.findall(pattern, text)
+    if matches:
+        logger.info(f"Extracted {len(matches)} task list IDs from text: {matches}")
+        return [{"id": task_id.strip()} for task_id in matches]
+    logger.warning("No task list IDs found in text content")
+    return None
 
 
 class GoogleWorkspaceHandler:
@@ -117,7 +133,8 @@ class GoogleWorkspaceHandler:
         Google Workspace MCP returns responses in MCP format:
         {
             "content": [{"type": "text", "text": "..."}],
-            ... possibly other fields with structured data
+            "structuredContent": { actual structured data },
+            "isError": false
         }
         """
         if not task_lists_res:
@@ -129,8 +146,39 @@ class GoogleWorkspaceHandler:
             # Log all keys to understand the structure
             logger.debug("_extract_list_items dict keys: %s", list(task_lists_res.keys()))
             
-            # Check for structured data fields (not in 'content' text)
-            # Google Workspace MCP might return structured data alongside the text content
+            # Check for structuredContent field (Google Workspace MCP format)
+            if "structuredContent" in task_lists_res:
+                structured = task_lists_res.get("structuredContent")
+                logger.debug("Found structuredContent, type: %s, keys: %s", 
+                           type(structured), 
+                           list(structured.keys()) if isinstance(structured, dict) else "not a dict")
+                
+                if isinstance(structured, dict):
+                    # Look for task lists in various possible locations
+                    if "taskLists" in structured:
+                        logger.debug("Found 'taskLists' in structuredContent")
+                        return structured.get("taskLists")
+                    
+                    if "items" in structured:
+                        logger.debug("Found 'items' in structuredContent")
+                        return structured.get("items")
+                    
+                    # Check if the whole structured content IS the list
+                    if "data" in structured and isinstance(structured["data"], dict):
+                        data = structured["data"]
+                        if "taskLists" in data or "items" in data:
+                            logger.debug("Found structured data in 'data' field")
+                            return data.get("taskLists") or data.get("items")
+                    
+                    # Log what we found to help debug
+                    logger.debug("structuredContent structure: %s", str(structured)[:1000])
+                    
+                    # Fallback: Try to parse text content if structuredContent only has 'result' with text
+                    if "result" in structured and isinstance(structured["result"], str):
+                        logger.info("Attempting to parse task list IDs from text content")
+                        return _parse_task_lists_from_text(structured["result"])
+            
+            # Fallback: Check for direct structured data fields
             if "taskLists" in task_lists_res:
                 logger.debug("Found 'taskLists' key in response")
                 return task_lists_res.get("taskLists")
@@ -139,12 +187,14 @@ class GoogleWorkspaceHandler:
                 logger.debug("Found 'items' key in response")
                 return task_lists_res.get("items")
             
-            # If there's a 'data' or similar field with structured info
-            if "data" in task_lists_res and isinstance(task_lists_res["data"], dict):
-                data = task_lists_res["data"]
-                if "taskLists" in data or "items" in data:
-                    logger.debug("Found structured data in 'data' field")
-                    return data.get("taskLists") or data.get("items")
+            # Final fallback: Try parsing from content array
+            if "content" in task_lists_res and isinstance(task_lists_res["content"], list):
+                for item in task_lists_res["content"]:
+                    if isinstance(item, dict) and item.get("type") == "text" and "text" in item:
+                        logger.info("Attempting to parse task list IDs from content text")
+                        parsed = _parse_task_lists_from_text(item["text"])
+                        if parsed:
+                            return parsed
             
             logger.warning("Could not find task lists in structured format, only found keys: %s", list(task_lists_res.keys()))
         

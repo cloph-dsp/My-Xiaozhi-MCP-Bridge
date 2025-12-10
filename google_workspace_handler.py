@@ -24,6 +24,36 @@ def _parse_task_lists_from_text(text: str):
     return None
 
 
+def _extract_mcp_content(response: Any) -> Any:
+    """Extract meaningful content from MCP response.
+    
+    MCP responses have structure: {"content": [...], "structuredContent": {...}, "isError": bool}
+    Extract the text content or structuredContent.result
+    """
+    if not isinstance(response, dict):
+        return response
+    
+    # Check if this is an MCP response structure
+    if "content" in response and isinstance(response["content"], list):
+        # Extract text from content array
+        for item in response["content"]:
+            if isinstance(item, dict) and item.get("type") == "text" and "text" in item:
+                return item["text"]
+    
+    # Check structuredContent for result
+    if "structuredContent" in response and isinstance(response["structuredContent"], dict):
+        if "result" in response["structuredContent"]:
+            return response["structuredContent"]["result"]
+    
+    # If it has isError field, it's likely an MCP response but we couldn't extract content
+    if "isError" in response:
+        logger.warning("Could not extract content from MCP response: %s", list(response.keys()))
+        return None
+    
+    # Not an MCP response, return as-is
+    return response
+
+
 class GoogleWorkspaceHandler:
     """Handler for Google Workspace calendar and tasks operations."""
     
@@ -39,14 +69,16 @@ class GoogleWorkspaceHandler:
           3) For each list, call list_tasks and aggregate results
         
         Returns only events and aggregated tasks (no raw list structures).
+        Filters out empty fields to save tokens.
         """
         # 1) Get events
         get_events_args = self._build_events_args(arguments)
-        events = await self._call_tool_with_timeout(
+        events_raw = await self._call_tool_with_timeout(
             "get_events", 
             get_events_args, 
             Config.CALENDAR_PER_CALL_TIMEOUT
         )
+        events = _extract_mcp_content(events_raw)
         
         # 2) List task lists
         task_lists_args = {"user_google_email": arguments.get("user_google_email")}
@@ -59,10 +91,29 @@ class GoogleWorkspaceHandler:
         # 3) List tasks per list
         tasks_per_list = await self._get_tasks_per_list(task_lists_res, arguments)
         
-        return {
-            "events": events,
-            "tasks": tasks_per_list
-        }
+        # Build response, only including non-empty fields
+        response: Dict[str, Any] = {}
+        
+        if events:
+            response["events"] = events
+        
+        if tasks_per_list:
+            # Extract content from each task response
+            tasks_cleaned = {}
+            for list_id, task_response in tasks_per_list.items():
+                task_content = _extract_mcp_content(task_response)
+                if task_content:
+                    tasks_cleaned[list_id] = task_content
+            
+            if tasks_cleaned:
+                response["tasks"] = tasks_cleaned
+        
+        # If nothing was found, provide a friendly message
+        if not response:
+            logger.info("No events or tasks found for the given criteria")
+            response["message"] = "No events or tasks found for the specified time range."
+        
+        return response
     
     @staticmethod
     def _build_events_args(arguments: Dict[str, Any]) -> Dict[str, Any]:

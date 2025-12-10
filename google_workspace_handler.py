@@ -106,7 +106,7 @@ class GoogleWorkspaceHandler:
                 continue
             
             task_args = {
-                "tasklist": list_id,
+                "task_list_id": list_id,
                 "user_google_email": arguments.get("user_google_email")
             }
             

@@ -71,14 +71,14 @@ class GoogleWorkspaceHandler:
         if arguments.get("user_google_email"):
             args["user_google_email"] = arguments.get("user_google_email")
         
-        # Support both snake_case and camelCase for time parameters
-        if arguments.get("time_min"):
-            args["time_min"] = arguments.get("time_min")
-            args["timeMin"] = arguments.get("time_min")
+        # Support both snake_case and camelCase input, but always output snake_case
+        time_min = arguments.get("time_min") or arguments.get("timeMin")
+        if time_min:
+            args["time_min"] = time_min
         
-        if arguments.get("time_max"):
-            args["time_max"] = arguments.get("time_max")
-            args["timeMax"] = arguments.get("time_max")
+        time_max = arguments.get("time_max") or arguments.get("timeMax")
+        if time_max:
+            args["time_max"] = time_max
         
         return args
     

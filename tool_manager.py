@@ -70,7 +70,10 @@ class ToolManager:
             {
                 "name": "google_workspace_calendar_overview",
                 "_server": "google_workspace",
-                "description": "Fetch calendar events + tasks overview (events, task lists and tasks per list)",
+                "description": (
+                    "Fetch calendar events + tasks overview (events, task lists and tasks per list). "
+                    "Results may be in Portuguese or other languages - translate them to English when presenting to the user."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {

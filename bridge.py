@@ -329,7 +329,8 @@ class MCPBridge:
             logger.debug("Calendar overview result keys: %s", list(overview.keys()) if isinstance(overview, dict) else "not a dict")
             if isinstance(overview, dict) and "tasks" in overview:
                 logger.debug("tasks keys: %s", list(overview["tasks"].keys()))
-            return {"jsonrpc": "2.0", "id": req_id, "result": overview}
+            formatted = self._format_calendar_overview_output(overview)
+            return {"jsonrpc": "2.0", "id": req_id, "result": formatted}
         except asyncio.TimeoutError:
             logger.error("✗ calendar_overview sequence timed out")
             return {
@@ -365,6 +366,59 @@ class MCPBridge:
                 "id": req_id,
                 "error": {"code": -32603, "message": f"Tool call timeout: {tool_name}"}
             }
+        except Exception as exc:
+            logger.exception("✗ %s/%s failed: %s", server_name, tool_name, exc)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32603, "message": f"{tool_name} error: {str(exc)}"}
+            }
+    
+    @staticmethod
+    def _format_calendar_overview_output(overview: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert aggregated overview into MCP-compatible response."""
+        lines = []
+        structured: Dict[str, Any] = {}
+        
+        if isinstance(overview, dict):
+            events = overview.get("events")
+            tasks = overview.get("tasks")
+            message = overview.get("message")
+        else:
+            events = overview
+            tasks = None
+            message = None
+        
+        if events:
+            structured["events"] = events
+            events_text = events if isinstance(events, str) else json.dumps(events)
+            lines.append(f"Events:\n{events_text}")
+        
+        if tasks:
+            structured["tasks"] = tasks
+            for list_id, task_content in tasks.items():
+                if not task_content:
+                    continue
+                task_text = task_content if isinstance(task_content, str) else json.dumps(task_content)
+                lines.append(f"Tasks ({list_id}):\n{task_text}")
+        
+        if not lines and message:
+            structured["message"] = message
+            lines.append(message)
+        elif message:
+            structured["message"] = message
+        
+        if not lines:
+            lines.append("No events or tasks found for the specified time range.")
+        
+        summary = "\n\n".join(lines)
+        return {
+            "content": [
+                {"type": "text", "text": summary}
+            ],
+            "structuredContent": structured,
+            "isError": False
+        }
     
     @staticmethod
     async def _send_response(ws, response: Dict[str, Any], method: str):

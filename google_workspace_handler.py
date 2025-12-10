@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from config import Config
@@ -125,12 +126,29 @@ class GoogleWorkspaceHandler:
         
         # Support both snake_case and camelCase input, but always output snake_case
         time_min = arguments.get("time_min") or arguments.get("timeMin")
+        time_max = arguments.get("time_max") or arguments.get("timeMax")
+        
+        # If no dates provided, default to today's date range
+        if not time_min or not time_max:
+            now = datetime.now(timezone.utc)
+            if not time_min:
+                # Start of today in UTC
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                time_min = today_start.isoformat()
+                logger.debug("No time_min provided, defaulting to today start: %s", time_min)
+            
+            if not time_max:
+                # End of today in UTC
+                today_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+                time_max = today_end.isoformat()
+                logger.debug("No time_max provided, defaulting to today end: %s", time_max)
+        
         if time_min:
             args["time_min"] = time_min
-        
-        time_max = arguments.get("time_max") or arguments.get("timeMax")
         if time_max:
             args["time_max"] = time_max
+        
+        logger.debug("get_events args: time_min=%s, time_max=%s", time_min, time_max)
         
         return args
     

@@ -75,6 +75,9 @@ class MCPBridge:
                 logger.error("[%s] Failed to initialize: %s", server_name, exc)
                 logger.warning("[%s] Skipping this server and continuing with others", server_name)
                 continue
+        
+        # Add Gemini search as standalone virtual tool
+        self.tool_manager.add_gemini_search_tool()
     
     async def _create_and_initialize_client(self, server_name: str, server_config: Dict[str, Any]) -> Any:
         """Create and initialize an MCP client."""
@@ -257,7 +260,7 @@ class MCPBridge:
         # Find which server owns this tool
         target_server, original_tool_name = self.tool_manager.find_tool_server(tool_name)
         
-        if not target_server or target_server not in self.clients:
+        if not target_server:
             logger.error("Tool %s not found in any server", tool_name)
             return {
                 "jsonrpc": "2.0",
@@ -267,15 +270,26 @@ class MCPBridge:
         
         logger.info("➤ Calling tool: %s on server %s", original_tool_name, target_server)
         
+        # Handle virtual tools
+        if target_server == "gemini" and original_tool_name == "search":
+            return await self._handle_gemini_search(req_id, arguments)
+        elif target_server == "google_workspace" and original_tool_name == "calendar_overview":
+            # Inject user_google_email for Google Workspace tools
+            arguments = self.tool_manager.inject_google_email(arguments)
+            return await self._handle_calendar_overview(req_id, arguments)
+        
+        # For real MCP server tools, check if server exists
+        if target_server not in self.clients:
+            logger.error("Server %s not connected", target_server)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32603, "message": f"Server not connected: {target_server}"}
+            }
+        
         # Inject user_google_email for Google Workspace tools
         if target_server == "google_workspace":
             arguments = self.tool_manager.inject_google_email(arguments)
-        
-        # Handle virtual tools
-        if original_tool_name == "search_gemini":
-            return await self._handle_gemini_search(req_id, arguments)
-        elif original_tool_name == "calendar_overview":
-            return await self._handle_calendar_overview(req_id, arguments)
         
         # Handle normal tool call
         return await self._handle_normal_tool_call(req_id, target_server, original_tool_name, arguments)

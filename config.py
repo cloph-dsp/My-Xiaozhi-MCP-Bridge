@@ -34,10 +34,8 @@ class Config:
     GEMINI_TEMPERATURE = 0.3
     
     # Tool filters
+    # Note: get_events, list_task_lists, list_tasks are replaced by calendar_overview virtual tool
     GOOGLE_WORKSPACE_ALLOWED_TOOLS = {
-        "get_events",
-        "list_task_lists",
-        "list_tasks",
         "get_task",
         "create_task",
         "update_task"

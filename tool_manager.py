@@ -31,6 +31,26 @@ class ToolManager:
         self.all_tools.extend(filtered_tools)
         logger.info("[%s] Registered %d tools", server_name, len(filtered_tools))
     
+    def add_gemini_search_tool(self):
+        """Add Gemini search as a standalone virtual tool."""
+        gemini_tool = {
+            "name": "gemini_search",
+            "_server": "gemini",
+            "description": "Search news with Gemini AI web search - returns concise summaries in Portuguese",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "description": "Search query"
+                    }
+                },
+                "required": ["q"]
+            }
+        }
+        self.all_tools.append(gemini_tool)
+        logger.info("[gemini] Registered 1 virtual tool")
+    
     @staticmethod
     def _filter_tools(server_name: str, server_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter tools based on server-specific allowed lists."""
@@ -47,21 +67,6 @@ class ToolManager:
     def _create_google_workspace_virtual_tools() -> List[Dict[str, Any]]:
         """Create virtual tools for Google Workspace."""
         return [
-            {
-                "name": "google_workspace_search_gemini",
-                "_server": "google_workspace",
-                "description": "Search news with Gemini AI web search - returns concise summaries",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "q": {
-                            "type": "string",
-                            "description": "Search query"
-                        }
-                    },
-                    "required": ["q"]
-                }
-            },
             {
                 "name": "google_workspace_calendar_overview",
                 "_server": "google_workspace",

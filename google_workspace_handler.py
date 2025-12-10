@@ -74,12 +74,14 @@ class GoogleWorkspaceHandler:
         """
         # 1) Get events
         get_events_args = self._build_events_args(arguments)
+        logger.info("Calling get_events with args: %s", get_events_args)
         events_raw = await self._call_tool_with_timeout(
             "get_events", 
             get_events_args, 
             Config.CALENDAR_PER_CALL_TIMEOUT
         )
         events = _extract_mcp_content(events_raw)
+        logger.info("get_events returned: %s", str(events)[:200] if events else "empty")
         
         # 2) List task lists
         task_lists_args = {"user_google_email": arguments.get("user_google_email")}
@@ -128,8 +130,9 @@ class GoogleWorkspaceHandler:
         time_min = arguments.get("time_min") or arguments.get("timeMin")
         time_max = arguments.get("time_max") or arguments.get("timeMax")
         
-        # If no dates provided, default to today's date range
+        # If no dates provided, default to a 7-day range starting from today
         if not time_min or not time_max:
+            from datetime import timedelta
             now = datetime.now(timezone.utc)
             if not time_min:
                 # Start of today in UTC
@@ -138,17 +141,18 @@ class GoogleWorkspaceHandler:
                 logger.debug("No time_min provided, defaulting to today start: %s", time_min)
             
             if not time_max:
-                # End of today in UTC
-                today_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
-                time_max = today_end.isoformat()
-                logger.debug("No time_max provided, defaulting to today end: %s", time_max)
+                # End of 7 days from now in UTC (to catch more events)
+                week_end = now + timedelta(days=7)
+                week_end = week_end.replace(hour=23, minute=59, second=59, microsecond=0)
+                time_max = week_end.isoformat()
+                logger.debug("No time_max provided, defaulting to 7 days from now: %s", time_max)
         
         if time_min:
             args["time_min"] = time_min
         if time_max:
             args["time_max"] = time_max
         
-        logger.debug("get_events args: time_min=%s, time_max=%s", time_min, time_max)
+        logger.info("get_events request: time_min=%s, time_max=%s", time_min, time_max)
         
         return args
     

@@ -37,6 +37,8 @@ class GoogleWorkspaceHandler:
           1) get_events (with time_min/time_max/user_google_email)
           2) list_task_lists (with user_google_email)
           3) For each list, call list_tasks and aggregate results
+        
+        Returns only events and aggregated tasks (no raw list structures).
         """
         # 1) Get events
         get_events_args = self._build_events_args(arguments)
@@ -59,8 +61,7 @@ class GoogleWorkspaceHandler:
         
         return {
             "events": events,
-            "task_lists": task_lists_res,
-            "tasks_per_list": tasks_per_list
+            "tasks": tasks_per_list
         }
     
     @staticmethod
@@ -119,11 +120,13 @@ class GoogleWorkspaceHandler:
                     Config.CALENDAR_LIST_TASKS_TIMEOUT
                 )
                 tasks_per_list[list_id] = tasks_res
+                logger.debug("Successfully fetched tasks for list %s, response keys: %s", list_id, list(tasks_res.keys()) if isinstance(tasks_res, dict) else type(tasks_res))
             except asyncio.TimeoutError:
                 tasks_per_list[list_id] = {"error": "timeout"}
             except Exception as e:
                 tasks_per_list[list_id] = {"error": str(e)}
         
+        logger.info("Finished processing task lists, total lists with tasks: %d", len(tasks_per_list))
         return tasks_per_list
     
     @staticmethod

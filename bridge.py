@@ -326,6 +326,9 @@ class MCPBridge:
                 timeout=Config.CALENDAR_TOTAL_TIMEOUT
             )
             logger.info("✓ Calendar overview completed")
+            logger.debug("Calendar overview result keys: %s", list(overview.keys()) if isinstance(overview, dict) else "not a dict")
+            if isinstance(overview, dict) and "tasks" in overview:
+                logger.debug("tasks keys: %s", list(overview["tasks"].keys()))
             return {"jsonrpc": "2.0", "id": req_id, "result": overview}
         except asyncio.TimeoutError:
             logger.error("✗ calendar_overview sequence timed out")

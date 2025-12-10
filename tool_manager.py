@@ -36,13 +36,13 @@ class ToolManager:
         gemini_tool = {
             "name": "gemini_search",
             "_server": "gemini",
-            "description": "Search news with Gemini AI web search - returns concise summaries in Portuguese",
+            "description": "Search the web with Gemini AI - get accurate, AI-summarized answers to any question in Portuguese",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "q": {
                         "type": "string",
-                        "description": "Search query"
+                        "description": "Search query or question"
                     }
                 },
                 "required": ["q"]

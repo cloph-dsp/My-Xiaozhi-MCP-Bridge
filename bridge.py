@@ -296,9 +296,9 @@ class MCPBridge:
     
     async def _handle_gemini_search(self, req_id: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Handle Gemini search virtual tool."""
-        logger.info("➤ Calling Gemini search (virtual tool)")
+        logger.info("➤ Calling Gemini web search (virtual tool)")
         query = arguments.get("q", "")
-        search_result = await self.gemini_service.search_news(query)
+        search_result = await self.gemini_service.search_web(query)
         
         result = {
             "content": [

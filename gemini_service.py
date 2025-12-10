@@ -60,8 +60,8 @@ class GeminiService:
         
         return text
     
-    async def search_news(self, query: str) -> str:
-        """Search and summarize news using Gemini 2.5 Flash with web search."""
+    async def search_web(self, query: str) -> str:
+        """Search the web and get AI-summarized results using Gemini 2.5 Flash."""
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not set, cannot search")
             return "Error: GEMINI_API_KEY not configured"
@@ -102,7 +102,7 @@ class GeminiService:
                 answer = self._extract_answer(result)
                 
                 if answer:
-                    logger.info(f"Gemini search completed for query: {query}")
+                    logger.info(f"Gemini web search completed for query: {query}")
                     return answer.strip()
                 
                 return "Error: Could not extract answer from Gemini response"
@@ -116,7 +116,7 @@ class GeminiService:
     @staticmethod
     def _build_summary_prompt(text: str) -> str:
         """Build prompt for text summarization."""
-        return f"""Summarize this news content in Portuguese (pt-BR) in 2-3 sentences maximum.
+        return f"""Summarize this news content in 2-3 sentences maximum.
 
 Content:
 {text}
@@ -125,15 +125,18 @@ Provide ONLY the summary, nothing else."""
     
     @staticmethod
     def _build_search_prompt(query: str) -> str:
-        """Build prompt for news search."""
-        return f"""Search for recent news about: {query}
+        """Build prompt for web search."""
+        return f"""Search the web for: {query}
 
-Provide a concise summary in Portuguese (pt-BR) with:
-1. 2-3 main points about the topic
-2. Key sources/outlets mentioned
-3. Keep it to 2-3 sentences maximum
+IMPORTANT: Be extremely concise and direct.
 
-Be direct and factual."""
+Provide a brief, helpful answer:
+1. Answer the query directly with only the most essential information
+2. Maximum 2-3 sentences
+3. No unnecessary details or elaboration
+4. Be factual and accurate
+
+Keep your response SHORT and to the point."""
     
     @staticmethod
     def _extract_answer(result: Dict[str, Any]) -> str | None:

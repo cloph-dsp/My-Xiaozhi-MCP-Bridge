@@ -41,7 +41,7 @@ class Config:
         "update_task"
     }
     
-    SUPERMEMORY_ALLOWED_TOOLS = {"search", "addMemory"}
+    SUPERMEMORY_ALLOWED_TOOLS = {"search"}  # Only search - addMemory has complex requirements
     
     @classmethod
     def load_server_config(cls) -> Dict[str, Any]:

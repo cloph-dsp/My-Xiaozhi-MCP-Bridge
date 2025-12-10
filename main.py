@@ -20,9 +20,8 @@ def list_tools_only():
     print("=" * 50)
     
     # Supermemory tools
-    print("\nSupermemory (2 tools):")
+    print("\nSupermemory (1 tool):")
     print("  • supermemory_search")
-    print("  • supermemory_addMemory")
     
     # Google Workspace tools
     print("\nGoogle Workspace (4 tools):")
@@ -33,10 +32,10 @@ def list_tools_only():
     
     # Gemini virtual tool
     print("\nGemini AI (1 tool):")
-    print("  • gemini_search  [virtual - web search with AI summarization]")
+    print("  • gemini_search  [virtual - web search for any information]")
     
     print("\n" + "=" * 50)
-    print("Total: 7 tools\n")
+    print("Total: 6 tools\n")
 
 
 async def main():
